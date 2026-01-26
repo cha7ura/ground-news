@@ -1,0 +1,441 @@
+{
+  "name": "Ground News - Story Clustering",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 2
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 2 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/rpc/get_unclustered_articles",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"hours_ago\": 48\n}",
+        "options": {}
+      },
+      "id": "get-unclustered",
+      "name": "Get Unclustered Articles",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-articles",
+              "leftValue": "={{ $json.length }}",
+              "rightValue": "0",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "has-articles",
+      "name": "Has Articles?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process unclustered articles and find clusters using Union-Find\nconst articles = $input.all().flatMap(item => \n  Array.isArray(item.json) ? item.json : [item.json]\n);\n\nif (articles.length === 0) {\n  return [{ json: { clusters: [], message: 'No articles to cluster' } }];\n}\n\n// Cosine similarity function\nfunction cosineSimilarity(a, b) {\n  if (!a || !b || a.length !== b.length) return 0;\n  let dotProduct = 0;\n  let normA = 0;\n  let normB = 0;\n  for (let i = 0; i < a.length; i++) {\n    dotProduct += a[i] * b[i];\n    normA += a[i] * a[i];\n    normB += b[i] * b[i];\n  }\n  if (normA === 0 || normB === 0) return 0;\n  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));\n}\n\n// Union-Find for clustering\nclass UnionFind {\n  constructor(n) {\n    this.parent = Array.from({ length: n }, (_, i) => i);\n    this.rank = Array(n).fill(0);\n  }\n  find(x) {\n    if (this.parent[x] !== x) {\n      this.parent[x] = this.find(this.parent[x]);\n    }\n    return this.parent[x];\n  }\n  union(x, y) {\n    const px = this.find(x);\n    const py = this.find(y);\n    if (px === py) return;\n    if (this.rank[px] < this.rank[py]) {\n      this.parent[px] = py;\n    } else if (this.rank[px] > this.rank[py]) {\n      this.parent[py] = px;\n    } else {\n      this.parent[py] = px;\n      this.rank[px]++;\n    }\n  }\n}\n\nconst SIMILARITY_THRESHOLD = 0.85;\nconst uf = new UnionFind(articles.length);\n\n// Parse embeddings and compare pairs\nconst embeddings = articles.map(a => {\n  if (typeof a.embedding === 'string') {\n    try {\n      return JSON.parse(a.embedding);\n    } catch {\n      return null;\n    }\n  }\n  return a.embedding;\n});\n\n// Find similar pairs\nfor (let i = 0; i < articles.length; i++) {\n  for (let j = i + 1; j < articles.length; j++) {\n    if (embeddings[i] && embeddings[j]) {\n      const similarity = cosineSimilarity(embeddings[i], embeddings[j]);\n      if (similarity >= SIMILARITY_THRESHOLD) {\n        uf.union(i, j);\n      }\n    }\n  }\n}\n\n// Group articles by cluster\nconst clusterMap = new Map();\nfor (let i = 0; i < articles.length; i++) {\n  const root = uf.find(i);\n  if (!clusterMap.has(root)) {\n    clusterMap.set(root, []);\n  }\n  clusterMap.get(root).push({\n    id: articles[i].id,\n    source_id: articles[i].source_id,\n    title: articles[i].title,\n    url: articles[i].url,\n    published_at: articles[i].published_at\n  });\n}\n\n// Only keep clusters with 2+ articles (actual story clusters)\nconst clusters = Array.from(clusterMap.values())\n  .filter(cluster => cluster.length >= 2)\n  .map(cluster => ({\n    articles: cluster,\n    article_count: cluster.length,\n    source_count: new Set(cluster.map(a => a.source_id)).size,\n    // Use the earliest article's title as the story title\n    seed_article: cluster.sort((a, b) => \n      new Date(a.published_at) - new Date(b.published_at)\n    )[0]\n  }));\n\nreturn clusters.map(cluster => ({ json: cluster }));"
+      },
+      "id": "cluster-articles",
+      "name": "Cluster by Similarity",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, -100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-clusters",
+              "leftValue": "={{ $json.articles }}",
+              "rightValue": "",
+              "operator": {
+                "type": "array",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "has-clusters",
+      "name": "Has Clusters?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [880, -100]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "stories",
+        "columns": "title,article_count,source_count,first_seen_at"
+      },
+      "id": "create-story",
+      "name": "Create Story",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1100, -200],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-creds",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare story data for insertion\nconst cluster = $input.item.json;\n\nreturn {\n  json: {\n    title: cluster.seed_article.title,\n    article_count: cluster.article_count,\n    source_count: cluster.source_count,\n    first_seen_at: cluster.seed_article.published_at || new Date().toISOString()\n  }\n};"
+      },
+      "id": "prepare-story",
+      "name": "Prepare Story Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, -100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Link articles to the newly created story\nconst cluster = $('Has Clusters?').item.json;\nconst story = $('Create Story').item.json;\n\nif (!story || !story.id) {\n  return [];\n}\n\n// Create story_articles junction records and update articles\nconst updates = cluster.articles.map((article, index) => ({\n  json: {\n    story_id: story.id,\n    article_id: article.id,\n    is_seed: index === 0,\n    similarity_score: 1.0 // All articles in cluster meet threshold\n  }\n}));\n\nreturn updates;"
+      },
+      "id": "prepare-links",
+      "name": "Prepare Article Links",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, -200]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "story_articles",
+        "columns": "story_id,article_id,is_seed_article,similarity_score"
+      },
+      "id": "link-articles",
+      "name": "Link Articles to Story",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1540, -200],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-creds",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Update articles with story_id\nconst cluster = $('Has Clusters?').item.json;\nconst story = $('Create Story').item.json;\n\nif (!story || !story.id) {\n  return [];\n}\n\nreturn cluster.articles.map(article => ({\n  json: {\n    id: article.id,\n    story_id: story.id\n  }\n}));"
+      },
+      "id": "prepare-article-updates",
+      "name": "Prepare Article Updates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, -200]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "articles",
+        "columns": "story_id",
+        "filterType": "string",
+        "filterString": "id=eq.{{ $json.id }}"
+      },
+      "id": "update-articles",
+      "name": "Update Articles with Story ID",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1980, -200],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-creds",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/rpc/update_story_stats",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"p_story_id\": \"{{ $('Create Story').item.json.id }}\"\n}",
+        "options": {}
+      },
+      "id": "update-story-stats",
+      "name": "Update Story Stats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2200, -200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/rpc/detect_story_blindspot",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"p_story_id\": \"{{ $('Create Story').item.json.id }}\"\n}",
+        "options": {}
+      },
+      "id": "detect-blindspot",
+      "name": "Detect Blindspot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2420, -200]
+    },
+    {
+      "parameters": {},
+      "id": "no-articles",
+      "name": "No Unclustered Articles",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [660, 100]
+    },
+    {
+      "parameters": {},
+      "id": "no-clusters",
+      "name": "No New Clusters Found",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1100, 0]
+    }
+  ],
+  "connections": {
+    "Every 2 Hours": {
+      "main": [
+        [
+          {
+            "node": "Get Unclustered Articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Unclustered Articles": {
+      "main": [
+        [
+          {
+            "node": "Has Articles?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Articles?": {
+      "main": [
+        [
+          {
+            "node": "Cluster by Similarity",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Unclustered Articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cluster by Similarity": {
+      "main": [
+        [
+          {
+            "node": "Has Clusters?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Clusters?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Story Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No New Clusters Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Story Data": {
+      "main": [
+        [
+          {
+            "node": "Create Story",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Story": {
+      "main": [
+        [
+          {
+            "node": "Prepare Article Links",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Article Updates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Article Links": {
+      "main": [
+        [
+          {
+            "node": "Link Articles to Story",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Link Articles to Story": {
+      "main": [
+        [
+          {
+            "node": "Update Story Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Story Stats": {
+      "main": [
+        [
+          {
+            "node": "Detect Blindspot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Article Updates": {
+      "main": [
+        [
+          {
+            "node": "Update Articles with Story ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["ground-news", "clustering"],
+  "triggerCount": 1,
+  "updatedAt": "2026-01-17T00:00:00.000Z",
+  "versionId": "1"
+}

@@ -1,0 +1,342 @@
+{
+  "name": "Ground News - Article Enrichment",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "articles",
+        "returnAll": false,
+        "limit": 10,
+        "filterType": "string",
+        "filterString": "ai_enriched_at=is.null,content=not.is.null"
+      },
+      "id": "get-unenriched-articles",
+      "name": "Get Un-enriched Articles",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [220, 0],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-creds",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-articles",
+              "leftValue": "={{ $json.length }}",
+              "rightValue": "0",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-has-articles",
+      "name": "Has Articles?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "=",
+        "options": {}
+      },
+      "id": "split-articles",
+      "name": "Split Articles",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [660, -100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.OPENROUTER_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "HTTP-Referer",
+              "value": "https://ground-news-sl.vercel.app"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"openai/gpt-4o-mini\",\n  \"temperature\": 0.2,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an expert news analyst specializing in Sri Lankan media. Analyze articles for topics, political bias, sentiment, and original reporting. Always return valid JSON.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Analyze this Sri Lankan news article:\\n\\nTitle: {{ $json.title }}\\n\\nContent:\\n{{ $json.content.substring(0, 4000) }}\\n\\nExtract and return a JSON object with:\\n- summary: A neutral 2-sentence summary of the article\\n- topics: Array of 3-5 topic keywords (e.g., 'politics', 'economy', 'cricket', 'tourism')\\n- bias_score: Float from -1.0 (far left/opposition leaning) to 1.0 (far right/government leaning), 0 is neutral. Consider Sri Lankan political context.\\n- sentiment: One of 'positive', 'negative', 'neutral', 'mixed'\\n- bias_indicators: Brief explanation of bias signals detected (or 'none detected')\\n- is_original_reporting: Boolean - true if this article contains original reporting (quotes, interviews, investigation), false if aggregated from other sources\\n\\nReturn ONLY valid JSON, no markdown.\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "analyze-article",
+      "name": "Analyze Article (OpenRouter)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, -100]
+    },
+    {
+      "parameters": {
+        "amount": 1,
+        "unit": "seconds"
+      },
+      "id": "rate-limit-1",
+      "name": "Rate Limit",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1100, -100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the LLM analysis response\nconst article = $('Split Articles').item.json;\nconst response = $('Analyze Article (OpenRouter)').item.json;\n\nlet analysis = {\n  summary: null,\n  topics: [],\n  bias_score: 0,\n  sentiment: 'neutral',\n  bias_indicators: null,\n  is_original_reporting: true\n};\n\ntry {\n  const content = response.choices[0].message.content;\n  // Remove markdown code blocks if present\n  const jsonStr = content.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n  analysis = JSON.parse(jsonStr);\n} catch (e) {\n  console.log('Failed to parse analysis:', e.message);\n}\n\nreturn {\n  json: {\n    id: article.id,\n    summary: analysis.summary || null,\n    topics: analysis.topics || [],\n    ai_bias_score: typeof analysis.bias_score === 'number' ? analysis.bias_score : 0,\n    ai_sentiment: ['positive', 'negative', 'neutral', 'mixed'].includes(analysis.sentiment) ? analysis.sentiment : 'neutral',\n    is_original_reporting: analysis.is_original_reporting === true\n  }\n};"
+      },
+      "id": "parse-analysis",
+      "name": "Parse Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, -100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.OPENAI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"text-embedding-ada-002\",\n  \"input\": \"{{ $('Split Articles').item.json.title }}. {{ $('Split Articles').item.json.content.substring(0, 6000).replace(/[\"\\\\]/g, ' ') }}\"\n}",
+        "options": {}
+      },
+      "id": "generate-embedding",
+      "name": "Generate Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1540, -100]
+    },
+    {
+      "parameters": {
+        "amount": 500,
+        "unit": "milliseconds"
+      },
+      "id": "rate-limit-2",
+      "name": "Rate Limit 2",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1760, -100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine analysis with embedding\nconst analysis = $('Parse Analysis').item.json;\nconst embeddingResponse = $('Generate Embedding').item.json;\n\nlet embedding = null;\nif (embeddingResponse.data && embeddingResponse.data[0]) {\n  embedding = embeddingResponse.data[0].embedding;\n}\n\nreturn {\n  json: {\n    id: analysis.id,\n    summary: analysis.summary,\n    topics: analysis.topics,\n    ai_bias_score: analysis.ai_bias_score,\n    ai_sentiment: analysis.ai_sentiment,\n    is_original_reporting: analysis.is_original_reporting,\n    embedding: embedding ? `[${embedding.join(',')}]` : null,\n    ai_enriched_at: new Date().toISOString()\n  }\n};"
+      },
+      "id": "prepare-update",
+      "name": "Prepare Update Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, -100]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "articles",
+        "columns": "summary,topics,ai_bias_score,ai_sentiment,is_original_reporting,embedding,ai_enriched_at",
+        "filterType": "string",
+        "filterString": "id=eq.{{ $json.id }}"
+      },
+      "id": "update-article",
+      "name": "Update Article",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2200, -100],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-creds",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "no-articles",
+      "name": "No Articles to Enrich",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [660, 100]
+    }
+  ],
+  "connections": {
+    "Every Hour": {
+      "main": [
+        [
+          {
+            "node": "Get Un-enriched Articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Un-enriched Articles": {
+      "main": [
+        [
+          {
+            "node": "Has Articles?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Articles?": {
+      "main": [
+        [
+          {
+            "node": "Split Articles",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Articles to Enrich",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Articles": {
+      "main": [
+        [
+          {
+            "node": "Analyze Article (OpenRouter)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Article (OpenRouter)": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit": {
+      "main": [
+        [
+          {
+            "node": "Parse Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Analysis": {
+      "main": [
+        [
+          {
+            "node": "Generate Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Embedding": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit 2": {
+      "main": [
+        [
+          {
+            "node": "Prepare Update Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Update Data": {
+      "main": [
+        [
+          {
+            "node": "Update Article",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["ground-news", "enrichment"],
+  "triggerCount": 1,
+  "updatedAt": "2026-01-17T00:00:00.000Z",
+  "versionId": "1"
+}

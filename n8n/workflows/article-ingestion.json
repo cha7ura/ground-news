@@ -1,0 +1,445 @@
+{
+  "name": "Ground News - Article Ingestion",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 30 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "sources",
+        "returnAll": true,
+        "filterType": "string",
+        "filterString": "is_active=eq.true,rss_url=not.is.null"
+      },
+      "id": "get-active-sources",
+      "name": "Get Active Sources",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [220, 0],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-creds",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-sources",
+              "leftValue": "={{ $json.length }}",
+              "rightValue": "0",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-has-sources",
+      "name": "Has Sources?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "=",
+        "options": {}
+      },
+      "id": "split-sources",
+      "name": "Split Sources",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [660, -100]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.rss_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "fetch-rss",
+      "name": "Fetch RSS Feed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, -100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse RSS feed XML to extract articles\nconst source = $('Split Sources').item.json;\nconst xmlText = $input.item.json.data || $input.item.json;\n\n// Simple RSS parser\nconst items = [];\nconst itemRegex = /<item[^>]*>([\\s\\S]*?)<\\/item>/gi;\nlet match;\n\nwhile ((match = itemRegex.exec(xmlText)) !== null) {\n  const itemXml = match[1];\n  \n  const getTagContent = (tag) => {\n    const regex = new RegExp(`<${tag}[^>]*><!\\\\[CDATA\\\\[([\\\\s\\\\S]*?)\\\\]\\\\]><\\\\/${tag}>|<${tag}[^>]*>([\\\\s\\\\S]*?)<\\\\/${tag}>`, 'i');\n    const match = itemXml.match(regex);\n    return match ? (match[1] || match[2] || '').trim() : null;\n  };\n  \n  const title = getTagContent('title');\n  const link = getTagContent('link');\n  const description = getTagContent('description');\n  const pubDate = getTagContent('pubDate');\n  \n  // Try to get image from media:content or enclosure\n  let imageUrl = null;\n  const mediaMatch = itemXml.match(/url=[\"']([^\"']+\\.(jpg|jpeg|png|gif|webp)[^\"']*)[\"']/i);\n  if (mediaMatch) {\n    imageUrl = mediaMatch[1];\n  }\n  \n  if (title && link) {\n    items.push({\n      source_id: source.id,\n      source_name: source.name,\n      source_slug: source.slug,\n      url: link,\n      title: title.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '\"'),\n      excerpt: description ? description.replace(/<[^>]*>/g, '').substring(0, 300) : null,\n      image_url: imageUrl,\n      published_at: pubDate ? new Date(pubDate).toISOString() : null\n    });\n  }\n}\n\n// Return only the most recent 20 items\nreturn items.slice(0, 20).map(item => ({ json: item }));"
+      },
+      "id": "parse-rss",
+      "name": "Parse RSS Feed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, -100]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "articles",
+        "returnAll": true,
+        "filterType": "string",
+        "filterString": "source_id=eq.{{ $('Split Sources').item.json.id }}"
+      },
+      "id": "get-existing-articles",
+      "name": "Get Existing URLs",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1320, -100],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-creds",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter out articles we already have\nconst rssItems = $('Parse RSS Feed').all();\nconst existingArticles = $('Get Existing URLs').all();\n\nconst existingUrls = new Set(\n  existingArticles.map(item => item.json.url)\n);\n\nconst newArticles = rssItems.filter(item => !existingUrls.has(item.json.url));\n\nif (newArticles.length === 0) {\n  return [];\n}\n\nreturn newArticles;"
+      },
+      "id": "filter-new-articles",
+      "name": "Filter New Articles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, -100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-new",
+              "leftValue": "={{ $json }}",
+              "rightValue": "",
+              "operator": {
+                "type": "object",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "has-new-articles",
+      "name": "Has New Articles?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1760, -100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.firecrawl.dev/v1/scrape",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.FIRECRAWL_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"url\": \"{{ $json.url }}\",\n  \"formats\": [\"markdown\"],\n  \"onlyMainContent\": true,\n  \"removeBase64Images\": true,\n  \"timeout\": 30000\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "scrape-article",
+      "name": "Scrape Article (Firecrawl)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, -200]
+    },
+    {
+      "parameters": {
+        "amount": 2,
+        "unit": "seconds"
+      },
+      "id": "rate-limit",
+      "name": "Rate Limit",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2200, -200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine RSS data with scraped content\nconst rssItem = $('Has New Articles?').item.json;\nconst scrapeResult = $('Scrape Article (Firecrawl)').item.json;\n\nlet content = null;\nlet imageUrl = rssItem.image_url;\n\nif (scrapeResult.success && scrapeResult.data) {\n  content = scrapeResult.data.markdown || null;\n  \n  // Try to get a better image from scraped content\n  if (!imageUrl && scrapeResult.data.metadata?.ogImage) {\n    imageUrl = scrapeResult.data.metadata.ogImage;\n  }\n}\n\nreturn {\n  json: {\n    source_id: rssItem.source_id,\n    url: rssItem.url,\n    title: rssItem.title,\n    excerpt: rssItem.excerpt,\n    content: content,\n    image_url: imageUrl,\n    published_at: rssItem.published_at,\n    scraped_at: new Date().toISOString(),\n    is_processed: content ? true : false\n  }\n};"
+      },
+      "id": "prepare-article",
+      "name": "Prepare Article Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2420, -200]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "articles",
+        "columns": "source_id,url,title,excerpt,content,image_url,published_at,scraped_at,is_processed"
+      },
+      "id": "insert-article",
+      "name": "Insert Article",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2640, -200],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-creds",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "sources",
+        "columns": "last_scraped_at",
+        "filterType": "string",
+        "filterString": "id=eq.{{ $('Split Sources').item.json.id }}"
+      },
+      "id": "update-source-timestamp",
+      "name": "Update Source Timestamp",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2860, -200],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-creds",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "no-sources",
+      "name": "No Active Sources",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [660, 100]
+    },
+    {
+      "parameters": {},
+      "id": "no-new-articles",
+      "name": "No New Articles",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1980, 0]
+    }
+  ],
+  "connections": {
+    "Every 30 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Get Active Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Active Sources": {
+      "main": [
+        [
+          {
+            "node": "Has Sources?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Sources?": {
+      "main": [
+        [
+          {
+            "node": "Split Sources",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Active Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Sources": {
+      "main": [
+        [
+          {
+            "node": "Fetch RSS Feed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch RSS Feed": {
+      "main": [
+        [
+          {
+            "node": "Parse RSS Feed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse RSS Feed": {
+      "main": [
+        [
+          {
+            "node": "Get Existing URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Existing URLs": {
+      "main": [
+        [
+          {
+            "node": "Filter New Articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter New Articles": {
+      "main": [
+        [
+          {
+            "node": "Has New Articles?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has New Articles?": {
+      "main": [
+        [
+          {
+            "node": "Scrape Article (Firecrawl)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No New Articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scrape Article (Firecrawl)": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit": {
+      "main": [
+        [
+          {
+            "node": "Prepare Article Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Article Data": {
+      "main": [
+        [
+          {
+            "node": "Insert Article",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Article": {
+      "main": [
+        [
+          {
+            "node": "Update Source Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["ground-news", "ingestion"],
+  "triggerCount": 1,
+  "updatedAt": "2026-01-17T00:00:00.000Z",
+  "versionId": "1"
+}
