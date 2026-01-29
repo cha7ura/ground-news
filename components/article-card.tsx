@@ -5,24 +5,28 @@ import { ExternalLink, Clock } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Article } from '@/lib/supabase';
 import { formatRelativeTime, truncate, cn, getBiasBgColor } from '@/lib/utils';
-import { getBiasLabel } from '@/lib/types';
+import { getBiasLabel, getLocalizedTitle, getLocalizedSummary, type Language } from '@/lib/types';
 
 interface ArticleCardProps {
   article: Article;
   showSource?: boolean;
   showBias?: boolean;
   className?: string;
+  locale?: Language;
 }
 
-export function ArticleCard({ 
-  article, 
-  showSource = true, 
+export function ArticleCard({
+  article,
+  showSource = true,
   showBias = true,
-  className 
+  className,
+  locale = 'en'
 }: ArticleCardProps) {
   const hasImage = article.image_url && article.image_url.startsWith('http');
   const source = article.source;
   const biasScore = article.ai_bias_score ?? source?.bias_score ?? 0;
+  const title = getLocalizedTitle(article, locale);
+  const articleSummary = getLocalizedSummary(article, locale);
 
   return (
     <a
@@ -87,13 +91,13 @@ export function ArticleCard({
 
           {/* Title */}
           <h3 className="font-semibold text-gray-900 mb-2 line-clamp-2 group-hover:text-brand-primary transition-colors">
-            {article.title}
+            {title}
           </h3>
 
           {/* Summary or excerpt */}
-          {(article.summary || article.excerpt) && (
+          {(articleSummary || article.excerpt) && (
             <p className="text-gray-600 text-sm mb-3 line-clamp-2 flex-1">
-              {truncate(article.summary || article.excerpt || '', 120)}
+              {truncate(articleSummary || article.excerpt || '', 120)}
             </p>
           )}
 
@@ -129,13 +133,15 @@ export function ArticleCard({
 }
 
 // Compact horizontal variant for story detail page
-export function ArticleCardHorizontal({ 
-  article, 
-  className 
+export function ArticleCardHorizontal({
+  article,
+  className,
+  locale = 'en'
 }: ArticleCardProps) {
   const hasImage = article.image_url && article.image_url.startsWith('http');
   const source = article.source;
   const biasScore = article.ai_bias_score ?? source?.bias_score ?? 0;
+  const horizTitle = getLocalizedTitle(article, locale);
 
   return (
     <a
@@ -180,7 +186,7 @@ export function ArticleCardHorizontal({
 
             {/* Title */}
             <h4 className="font-semibold text-gray-900 line-clamp-2 group-hover:text-brand-primary transition-colors">
-              {article.title}
+              {horizTitle}
             </h4>
 
             {/* Meta */}

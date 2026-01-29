@@ -1,0 +1,1 @@
+self.__NEXT_FONT_MANIFEST='{"pages":{},"app":{"/Users/chaturaattidiya/Documents/Github/project-ref/ground-news/app/layout":["static/media/e4af272ccee01ff0-s.p.woff2","static/media/740235911a5041be-s.p.woff2"]},"appUsingSizeAdjust":true,"pagesUsingSizeAdjust":false}';

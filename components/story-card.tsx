@@ -8,19 +8,24 @@ import { BiasIndicator } from '@/components/bias-indicator';
 import { BlindspotIndicator } from '@/components/blindspot-badge';
 import { Story } from '@/lib/supabase';
 import { formatRelativeTime, truncate, cn } from '@/lib/utils';
+import { getLocalizedTitle, getLocalizedSummary, type Language } from '@/lib/types';
 
 interface StoryCardProps {
   story: Story;
   variant?: 'default' | 'compact' | 'featured';
   className?: string;
+  locale?: Language;
 }
 
-export function StoryCard({ story, variant = 'default', className }: StoryCardProps) {
+export function StoryCard({ story, variant = 'default', className, locale = 'en' }: StoryCardProps) {
   const hasImage = story.image_url && story.image_url.startsWith('http');
+  const title = getLocalizedTitle(story, locale);
+  const summary = getLocalizedSummary(story, locale);
+  const linkPrefix = `/${locale}`;
 
   if (variant === 'featured') {
     return (
-      <Link href={`/story/${story.id}`}>
+      <Link href={`${linkPrefix}/story/${story.id}`}>
         <Card className={cn(
           'group overflow-hidden hover:shadow-lg transition-all duration-200',
           className
@@ -31,7 +36,7 @@ export function StoryCard({ story, variant = 'default', className }: StoryCardPr
               <div className="relative w-full md:w-1/2 h-48 md:h-auto md:min-h-[280px]">
                 <Image
                   src={story.image_url!}
-                  alt={story.title}
+                  alt={title}
                   fill
                   className="object-cover group-hover:scale-105 transition-transform duration-300"
                   unoptimized
@@ -53,13 +58,13 @@ export function StoryCard({ story, variant = 'default', className }: StoryCardPr
 
               {/* Title */}
               <h2 className="text-xl md:text-2xl font-bold text-gray-900 mb-3 group-hover:text-brand-primary transition-colors line-clamp-3">
-                {story.title}
+                {title}
               </h2>
 
               {/* Summary */}
-              {story.summary && (
+              {summary && (
                 <p className="text-gray-600 text-sm mb-4 line-clamp-2">
-                  {story.summary}
+                  {summary}
                 </p>
               )}
 
@@ -98,7 +103,7 @@ export function StoryCard({ story, variant = 'default', className }: StoryCardPr
 
   if (variant === 'compact') {
     return (
-      <Link href={`/story/${story.id}`}>
+      <Link href={`${linkPrefix}/story/${story.id}`}>
         <Card className={cn(
           'group p-4 hover:shadow-md transition-all duration-200 hover:border-brand-primary/30',
           className
@@ -109,7 +114,7 @@ export function StoryCard({ story, variant = 'default', className }: StoryCardPr
               <div className="relative w-20 h-20 flex-shrink-0 rounded-lg overflow-hidden">
                 <Image
                   src={story.image_url!}
-                  alt={story.title}
+                  alt={title}
                   fill
                   className="object-cover"
                   unoptimized
@@ -120,7 +125,7 @@ export function StoryCard({ story, variant = 'default', className }: StoryCardPr
             <div className="flex-1 min-w-0">
               {/* Title */}
               <h3 className="font-semibold text-gray-900 text-sm line-clamp-2 group-hover:text-brand-primary transition-colors">
-                {story.title}
+                {title}
               </h3>
 
               {/* Meta row */}
@@ -147,7 +152,7 @@ export function StoryCard({ story, variant = 'default', className }: StoryCardPr
 
   // Default variant
   return (
-    <Link href={`/story/${story.id}`}>
+    <Link href={`${linkPrefix}/story/${story.id}`}>
       <Card className={cn(
         'group overflow-hidden hover:shadow-lg transition-all duration-200 hover:border-brand-primary/30 h-full flex flex-col',
         className
@@ -157,7 +162,7 @@ export function StoryCard({ story, variant = 'default', className }: StoryCardPr
           <div className="relative w-full h-40 overflow-hidden">
             <Image
               src={story.image_url!}
-              alt={story.title}
+              alt={title}
               fill
               className="object-cover group-hover:scale-105 transition-transform duration-300"
               unoptimized
@@ -181,13 +186,13 @@ export function StoryCard({ story, variant = 'default', className }: StoryCardPr
 
           {/* Title */}
           <h3 className="font-bold text-gray-900 mb-2 line-clamp-2 group-hover:text-brand-primary transition-colors">
-            {story.title}
+            {title}
           </h3>
 
           {/* Summary */}
-          {story.summary && (
+          {summary && (
             <p className="text-gray-600 text-sm mb-3 line-clamp-2 flex-1">
-              {truncate(story.summary, 120)}
+              {truncate(summary, 120)}
             </p>
           )}
 

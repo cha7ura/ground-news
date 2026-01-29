@@ -8,6 +8,10 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['var(--font-inter)', 'system-ui', 'sans-serif'],
+        sinhala: ['var(--font-sinhala)', 'system-ui', 'sans-serif'],
+      },
       colors: {
         // Ground News inspired colors
         bias: {

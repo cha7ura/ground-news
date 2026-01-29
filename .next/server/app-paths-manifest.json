@@ -1,0 +1,13 @@
+{
+  "/_not-found/page": "app/_not-found/page.js",
+  "/[locale]/topics/page": "app/[locale]/topics/page.js",
+  "/[locale]/daily-briefing/page": "app/[locale]/daily-briefing/page.js",
+  "/[locale]/source/[slug]/page": "app/[locale]/source/[slug]/page.js",
+  "/[locale]/blindspots/page": "app/[locale]/blindspots/page.js",
+  "/[locale]/page": "app/[locale]/page.js",
+  "/[locale]/story/[id]/page": "app/[locale]/story/[id]/page.js",
+  "/[locale]/sources/page": "app/[locale]/sources/page.js",
+  "/[locale]/tag/[slug]/page": "app/[locale]/tag/[slug]/page.js",
+  "/[locale]/admin/tags/[id]/page": "app/[locale]/admin/tags/[id]/page.js",
+  "/[locale]/admin/tags/page": "app/[locale]/admin/tags/page.js"
+}

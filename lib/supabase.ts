@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import type { Tag, TagType } from '@/lib/types';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -23,6 +24,7 @@ export interface Source {
   description: string | null;
   country: string;
   language: string;
+  languages: string[];
   created_at: string;
   updated_at: string;
 }
@@ -45,10 +47,19 @@ export interface Article {
   ai_enriched_at: string | null;
   story_id: string | null;
   is_processed: boolean;
+  // i18n fields
+  language: string;
+  original_language: string;
+  title_si: string | null;
+  title_en: string | null;
+  summary_si: string | null;
+  summary_en: string | null;
+  is_backfill: boolean;
   created_at: string;
   updated_at: string;
   // Joined data
   source?: Source;
+  tags?: Tag[];
 }
 
 export interface Story {
@@ -69,6 +80,9 @@ export interface Story {
   is_active: boolean;
   is_trending: boolean;
   created_at: string;
+  // i18n fields
+  title_si: string | null;
+  summary_si: string | null;
   // Blindspot fields
   blindspot_type: 'left' | 'right' | 'both' | 'none' | null;
   is_blindspot: boolean;
@@ -78,6 +92,7 @@ export interface Story {
   briefing_date: string | null;
   // Joined data
   articles?: Article[];
+  tags?: Tag[];
 }
 
 export interface DailyBriefing {
@@ -282,4 +297,255 @@ export async function getRecentBriefings(limit = 7): Promise<DailyBriefing[]> {
   }
 
   return data || [];
+}
+
+// ============================================
+// Tag query functions
+// ============================================
+
+export async function getTagBySlug(slug: string): Promise<Tag | null> {
+  const { data, error } = await supabase
+    .from('tags')
+    .select('*')
+    .eq('slug', slug)
+    .eq('is_active', true)
+    .single();
+
+  if (error) {
+    console.error('Error fetching tag:', error);
+    return null;
+  }
+
+  return data;
+}
+
+export async function getPopularTags(limit = 20): Promise<Tag[]> {
+  const { data, error } = await supabase
+    .from('tags')
+    .select('*')
+    .eq('is_active', true)
+    .order('article_count', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error('Error fetching popular tags:', error);
+    return [];
+  }
+
+  return data || [];
+}
+
+export async function getTagsByType(type: TagType, limit = 20): Promise<Tag[]> {
+  const { data, error } = await supabase
+    .from('tags')
+    .select('*')
+    .eq('type', type)
+    .eq('is_active', true)
+    .order('article_count', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error('Error fetching tags by type:', error);
+    return [];
+  }
+
+  return data || [];
+}
+
+export async function getArticlesByTag(tagSlug: string, limit = 20): Promise<Article[]> {
+  // First get the tag ID
+  const tag = await getTagBySlug(tagSlug);
+  if (!tag) return [];
+
+  // Get article IDs from junction table
+  const { data: articleTags, error: junctionError } = await supabase
+    .from('article_tags')
+    .select('article_id')
+    .eq('tag_id', tag.id)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (junctionError || !articleTags || articleTags.length === 0) return [];
+
+  const articleIds = articleTags.map(at => at.article_id);
+
+  const { data, error } = await supabase
+    .from('articles')
+    .select(`
+      *,
+      source:sources(id, name, slug, logo_url, bias_score)
+    `)
+    .in('id', articleIds)
+    .order('published_at', { ascending: false });
+
+  if (error) {
+    console.error('Error fetching articles by tag:', error);
+    return [];
+  }
+
+  return data || [];
+}
+
+export async function getStoriesByTag(tagSlug: string, limit = 10): Promise<Story[]> {
+  const tag = await getTagBySlug(tagSlug);
+  if (!tag) return [];
+
+  const { data: storyTags, error: junctionError } = await supabase
+    .from('story_tags')
+    .select('story_id')
+    .eq('tag_id', tag.id)
+    .order('article_count', { ascending: false })
+    .limit(limit);
+
+  if (junctionError || !storyTags || storyTags.length === 0) return [];
+
+  const storyIds = storyTags.map(st => st.story_id);
+
+  const { data, error } = await supabase
+    .from('stories')
+    .select('*')
+    .in('id', storyIds)
+    .eq('is_active', true)
+    .order('last_updated_at', { ascending: false });
+
+  if (error) {
+    console.error('Error fetching stories by tag:', error);
+    return [];
+  }
+
+  return data || [];
+}
+
+export async function getRelatedTags(tagId: string, limit = 10): Promise<Tag[]> {
+  // Find articles that have this tag, then find other tags on those articles
+  const { data: articleIds, error: atError } = await supabase
+    .from('article_tags')
+    .select('article_id')
+    .eq('tag_id', tagId)
+    .limit(100);
+
+  if (atError || !articleIds || articleIds.length === 0) return [];
+
+  const ids = articleIds.map(a => a.article_id);
+
+  const { data: relatedTagIds, error: rtError } = await supabase
+    .from('article_tags')
+    .select('tag_id')
+    .in('article_id', ids)
+    .neq('tag_id', tagId);
+
+  if (rtError || !relatedTagIds) return [];
+
+  // Count frequency of each related tag
+  const tagCounts: Record<string, number> = {};
+  relatedTagIds.forEach(rt => {
+    tagCounts[rt.tag_id] = (tagCounts[rt.tag_id] || 0) + 1;
+  });
+
+  // Get top N tag IDs
+  const topTagIds = Object.entries(tagCounts)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, limit)
+    .map(([id]) => id);
+
+  if (topTagIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from('tags')
+    .select('*')
+    .in('id', topTagIds)
+    .eq('is_active', true);
+
+  if (error) {
+    console.error('Error fetching related tags:', error);
+    return [];
+  }
+
+  return data || [];
+}
+
+// ============================================
+// Admin tag management functions
+// ============================================
+
+export async function createTag(tag: {
+  name: string;
+  name_si?: string;
+  slug: string;
+  type: TagType;
+  description?: string;
+  description_si?: string;
+  created_by?: string;
+}): Promise<Tag | null> {
+  const { data, error } = await supabase
+    .from('tags')
+    .insert(tag)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Error creating tag:', error);
+    return null;
+  }
+
+  return data;
+}
+
+export async function updateTag(id: string, updates: Partial<Tag>): Promise<Tag | null> {
+  const { data, error } = await supabase
+    .from('tags')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Error updating tag:', error);
+    return null;
+  }
+
+  return data;
+}
+
+export async function getAllTags(limit = 100): Promise<Tag[]> {
+  const { data, error } = await supabase
+    .from('tags')
+    .select('*')
+    .order('article_count', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error('Error fetching all tags:', error);
+    return [];
+  }
+
+  return data || [];
+}
+
+export async function addTagToArticle(articleId: string, tagId: string): Promise<boolean> {
+  const { error } = await supabase
+    .from('article_tags')
+    .insert({ article_id: articleId, tag_id: tagId, source: 'manual', confidence: 1.0 });
+
+  if (error) {
+    console.error('Error adding tag to article:', error);
+    return false;
+  }
+
+  return true;
+}
+
+export async function removeTagFromArticle(articleId: string, tagId: string): Promise<boolean> {
+  const { error } = await supabase
+    .from('article_tags')
+    .delete()
+    .eq('article_id', articleId)
+    .eq('tag_id', tagId);
+
+  if (error) {
+    console.error('Error removing tag from article:', error);
+    return false;
+  }
+
+  return true;
 }
