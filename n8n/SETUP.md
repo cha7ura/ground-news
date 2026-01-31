@@ -6,7 +6,7 @@ This guide explains how to set up the n8n workflows for Ground News Sri Lanka.
 
 - n8n instance (self-hosted or cloud)
 - Supabase project with migrations applied
-- API keys for: Firecrawl, OpenRouter, OpenAI
+- API keys for: Firecrawl, OpenRouter, OpenAI (production) or Ollama/LM Studio (local)
 
 ## Environment Variables
 
@@ -18,6 +18,17 @@ SUPABASE_SERVICE_KEY=your-service-role-key
 FIRECRAWL_API_KEY=fc-your-key
 OPENROUTER_API_KEY=your-openrouter-key
 OPENAI_API_KEY=sk-your-key
+
+# Embedding provider (optional - defaults to OpenAI)
+# For Ollama (default local provider via docker-compose):
+# EMBEDDING_API_URL=http://localhost:11434/v1/embeddings
+# EMBEDDING_MODEL=qwen3-embedding:0.6b
+# (No API key needed for Ollama)
+#
+# For LM Studio (alternative local provider):
+# EMBEDDING_API_URL=http://localhost:1234/v1/embeddings
+# EMBEDDING_API_KEY=lm-studio
+# EMBEDDING_MODEL=text-embedding-qwen3-embedding-0.6b
 ```
 
 ## Credentials Setup
@@ -70,7 +81,21 @@ Import each workflow JSON file:
 **Required Credentials**:
 - Supabase API
 - OpenRouter API (via HTTP header)
-- OpenAI API (via HTTP header)
+- OpenAI API (via HTTP header) — or Ollama/LM Studio when using local embeddings
+
+**Local Development (Ollama — default)**:
+When using Ollama for local embeddings (runs via `docker compose`), set these n8n environment variables:
+- `EMBEDDING_API_URL`: `http://localhost:11434/v1/embeddings`
+- `EMBEDDING_MODEL`: `qwen3-embedding:0.6b`
+- No API key needed — Ollama requires no authentication
+
+**Local Development (LM Studio — alternative)**:
+When using LM Studio for local embeddings, set these n8n environment variables:
+- `EMBEDDING_API_URL`: `http://localhost:1234/v1/embeddings`
+- `EMBEDDING_API_KEY`: `lm-studio`
+- `EMBEDDING_MODEL`: Your loaded model name (e.g., `text-embedding-qwen3-embedding-0.6b`)
+
+The workflow falls back to OpenAI defaults when these are not set.
 
 ### 3. Story Clustering (`story-clustering.json`)
 

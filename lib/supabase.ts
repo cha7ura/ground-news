@@ -1,5 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Tag, TagType } from '@/lib/types';
+import { createLogger } from '@/lib/logger';
+
+const log = createLogger('supabase');
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -123,7 +126,7 @@ export async function getStories(limit = 20): Promise<Story[]> {
     .limit(limit);
 
   if (error) {
-    console.error('Error fetching stories:', error);
+    log.error('Error fetching stories', { error });
     return [];
   }
 
@@ -138,7 +141,7 @@ export async function getStoryWithArticles(storyId: string): Promise<Story | nul
     .single();
 
   if (storyError || !story) {
-    console.error('Error fetching story:', storyError);
+    log.error('Error fetching story', { error: storyError });
     return null;
   }
 
@@ -152,7 +155,7 @@ export async function getStoryWithArticles(storyId: string): Promise<Story | nul
     .order('published_at', { ascending: false });
 
   if (articlesError) {
-    console.error('Error fetching articles:', articlesError);
+    log.error('Error fetching articles', { error: articlesError });
     return { ...story, articles: [] };
   }
 
@@ -170,7 +173,7 @@ export async function getLatestArticles(limit = 20): Promise<Article[]> {
     .limit(limit);
 
   if (error) {
-    console.error('Error fetching articles:', error);
+    log.error('Error fetching articles', { error });
     return [];
   }
 
@@ -185,7 +188,7 @@ export async function getSources(): Promise<Source[]> {
     .order('name');
 
   if (error) {
-    console.error('Error fetching sources:', error);
+    log.error('Error fetching sources', { error });
     return [];
   }
 
@@ -200,7 +203,7 @@ export async function getSource(slug: string): Promise<Source | null> {
     .single();
 
   if (error) {
-    console.error('Error fetching source:', error);
+    log.error('Error fetching source', { error });
     return null;
   }
 
@@ -216,7 +219,7 @@ export async function getArticlesBySource(sourceId: string, limit = 20): Promise
     .limit(limit);
 
   if (error) {
-    console.error('Error fetching articles by source:', error);
+    log.error('Error fetching articles by source', { error });
     return [];
   }
 
@@ -240,7 +243,7 @@ export async function getBlindspotStories(limit = 10, type?: 'left' | 'right'): 
   const { data, error } = await query;
 
   if (error) {
-    console.error('Error fetching blindspot stories:', error);
+    log.error('Error fetching blindspot stories', { error });
     return [];
   }
 
@@ -292,7 +295,7 @@ export async function getRecentBriefings(limit = 7): Promise<DailyBriefing[]> {
     .limit(limit);
 
   if (error) {
-    console.error('Error fetching briefings:', error);
+    log.error('Error fetching briefings', { error });
     return [];
   }
 
@@ -312,7 +315,7 @@ export async function getTagBySlug(slug: string): Promise<Tag | null> {
     .single();
 
   if (error) {
-    console.error('Error fetching tag:', error);
+    log.error('Error fetching tag', { error });
     return null;
   }
 
@@ -328,7 +331,7 @@ export async function getPopularTags(limit = 20): Promise<Tag[]> {
     .limit(limit);
 
   if (error) {
-    console.error('Error fetching popular tags:', error);
+    log.error('Error fetching popular tags', { error });
     return [];
   }
 
@@ -345,7 +348,7 @@ export async function getTagsByType(type: TagType, limit = 20): Promise<Tag[]> {
     .limit(limit);
 
   if (error) {
-    console.error('Error fetching tags by type:', error);
+    log.error('Error fetching tags by type', { error });
     return [];
   }
 
@@ -379,7 +382,7 @@ export async function getArticlesByTag(tagSlug: string, limit = 20): Promise<Art
     .order('published_at', { ascending: false });
 
   if (error) {
-    console.error('Error fetching articles by tag:', error);
+    log.error('Error fetching articles by tag', { error });
     return [];
   }
 
@@ -409,7 +412,7 @@ export async function getStoriesByTag(tagSlug: string, limit = 10): Promise<Stor
     .order('last_updated_at', { ascending: false });
 
   if (error) {
-    console.error('Error fetching stories by tag:', error);
+    log.error('Error fetching stories by tag', { error });
     return [];
   }
 
@@ -457,7 +460,7 @@ export async function getRelatedTags(tagId: string, limit = 10): Promise<Tag[]> 
     .eq('is_active', true);
 
   if (error) {
-    console.error('Error fetching related tags:', error);
+    log.error('Error fetching related tags', { error });
     return [];
   }
 
@@ -484,7 +487,7 @@ export async function createTag(tag: {
     .single();
 
   if (error) {
-    console.error('Error creating tag:', error);
+    log.error('Error creating tag', { error });
     return null;
   }
 
@@ -500,7 +503,7 @@ export async function updateTag(id: string, updates: Partial<Tag>): Promise<Tag 
     .single();
 
   if (error) {
-    console.error('Error updating tag:', error);
+    log.error('Error updating tag', { error });
     return null;
   }
 
@@ -515,7 +518,7 @@ export async function getAllTags(limit = 100): Promise<Tag[]> {
     .limit(limit);
 
   if (error) {
-    console.error('Error fetching all tags:', error);
+    log.error('Error fetching all tags', { error });
     return [];
   }
 
@@ -528,7 +531,7 @@ export async function addTagToArticle(articleId: string, tagId: string): Promise
     .insert({ article_id: articleId, tag_id: tagId, source: 'manual', confidence: 1.0 });
 
   if (error) {
-    console.error('Error adding tag to article:', error);
+    log.error('Error adding tag to article', { error });
     return false;
   }
 
@@ -543,7 +546,7 @@ export async function removeTagFromArticle(articleId: string, tagId: string): Pr
     .eq('tag_id', tagId);
 
   if (error) {
-    console.error('Error removing tag from article:', error);
+    log.error('Error removing tag from article', { error });
     return false;
   }
 

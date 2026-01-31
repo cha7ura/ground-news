@@ -136,13 +136,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://api.openai.com/v1/embeddings",
+        "url": "={{ $env.EMBEDDING_API_URL || 'https://api.openai.com/v1/embeddings' }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Authorization",
-              "value": "=Bearer {{ $env.OPENAI_API_KEY }}"
+              "value": "=Bearer {{ $env.EMBEDDING_API_KEY || $env.OPENAI_API_KEY }}"
             },
             {
               "name": "Content-Type",
@@ -152,7 +152,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"model\": \"text-embedding-ada-002\",\n  \"input\": \"{{ $('Split Articles').item.json.title }}. {{ $('Split Articles').item.json.content.substring(0, 6000).replace(/[\"\\\\]/g, ' ') }}\"\n}",
+        "jsonBody": "={\n  \"model\": \"{{ $env.EMBEDDING_MODEL || 'text-embedding-ada-002' }}\",\n  \"input\": \"{{ $('Split Articles').item.json.title }}. {{ $('Split Articles').item.json.content.substring(0, 6000).replace(/[\"\\\\]/g, ' ') }}\"\n}",
         "options": {}
       },
       "id": "generate-embedding",

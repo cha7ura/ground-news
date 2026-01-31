@@ -7,8 +7,20 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "db:start": "supabase start",
+    "db:stop": "supabase stop",
+    "db:reset": "supabase db reset",
     "db:migrate": "supabase db push",
-    "meilisearch:init": "npx ts-node scripts/init-meilisearch.ts"
+    "db:diff": "supabase db diff",
+    "db:status": "supabase status",
+    "meilisearch:init": "npx tsx scripts/init-meilisearch.ts",
+    "health": "npx tsx scripts/health-check.ts --all",
+    "health:meilisearch": "npx tsx scripts/health-check.ts --meilisearch",
+    "health:redis": "npx tsx scripts/health-check.ts --redis",
+    "health:firecrawl": "npx tsx scripts/health-check.ts --firecrawl",
+    "health:supabase": "npx tsx scripts/health-check.ts --supabase",
+    "health:embedding": "npx tsx scripts/health-check.ts --embedding",
+    "health:llm": "npx tsx scripts/health-check.ts --llm"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
@@ -31,6 +43,7 @@
     "eslint-config-next": "14.2.5",
     "postcss": "^8.4.39",
     "tailwindcss": "^3.4.6",
+    "tsx": "^4.21.0",
     "typescript": "5.9.3"
   }
 }

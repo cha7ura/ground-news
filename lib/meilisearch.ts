@@ -1,4 +1,7 @@
 import { MeiliSearch } from 'meilisearch';
+import { createLogger } from '@/lib/logger';
+
+const log = createLogger('meilisearch');
 
 const meilisearchUrl = process.env.MEILISEARCH_URL || process.env.MEILISEARCH_HOST || 'http://localhost:7700';
 const meilisearchKey = process.env.MEILISEARCH_MASTER_KEY || 'masterKey';
@@ -99,7 +102,7 @@ export async function initializeIndexes() {
     ],
   });
 
-  console.log('Meilisearch indexes initialized for Ground News');
+  log.info('Meilisearch indexes initialized');
 }
 
 // Article types
