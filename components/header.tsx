@@ -60,9 +60,11 @@ export function Header({ locale, dict }: HeaderProps) {
           <div className="flex items-center gap-2">
             <ThemeToggle />
             <LanguageSwitcher locale={locale} />
-            <Button variant="ghost" size="icon" className="hidden sm:flex">
-              <Search className="h-5 w-5" />
-            </Button>
+            <Link href={`${prefix}/search`}>
+              <Button variant="ghost" size="icon" className="hidden sm:flex">
+                <Search className="h-5 w-5" />
+              </Button>
+            </Link>
 
             {/* Mobile menu button */}
             <Button

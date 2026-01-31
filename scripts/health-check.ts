@@ -13,6 +13,8 @@
 //   --supabase      Check Supabase database
 //   --embedding     Check embedding provider (Ollama, LM Studio, or OpenAI)
 //   --llm           Check LLM provider (OpenRouter)
+//   --neo4j         Check Neo4j graph database
+//   --graphiti      Check Graphiti knowledge graph API
 //   --app           Check Next.js dev server
 
 import * as fs from 'node:fs';
@@ -257,6 +259,50 @@ async function checkLLM(): Promise<CheckResult> {
   }
 }
 
+async function checkGraphiti(): Promise<CheckResult> {
+  const name = 'Graphiti';
+  const start = Date.now();
+  const url = process.env.GRAPHITI_API_URL || 'http://localhost:8000';
+
+  try {
+    const res = await timedFetch(`${url}/healthcheck`);
+    const ms = Date.now() - start;
+
+    if (res.ok) {
+      return { name, status: 'pass', message: `Healthy at ${url}`, durationMs: ms };
+    }
+    return { name, status: 'fail', message: `HTTP ${res.status} from ${url}/healthcheck`, durationMs: ms };
+  } catch (err) {
+    return { name, status: 'fail', message: errorMessage(err), durationMs: Date.now() - start };
+  }
+}
+
+async function checkNeo4j(): Promise<CheckResult> {
+  const name = 'Neo4j';
+  const start = Date.now();
+  const host = 'localhost';
+  const port = 7687;
+
+  return new Promise<CheckResult>((resolve) => {
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve({ name, status: 'fail', message: 'Connection timed out', durationMs: Date.now() - start });
+    }, 5000);
+
+    const socket = net.createConnection({ host, port }, () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve({ name, status: 'pass', message: `Bolt protocol at ${host}:${port}`, durationMs: Date.now() - start });
+    });
+
+    socket.on('error', (err) => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve({ name, status: 'fail', message: errorMessage(err), durationMs: Date.now() - start });
+    });
+  });
+}
+
 async function checkApp(): Promise<CheckResult> {
   const name = 'Next.js App';
   const start = Date.now();
@@ -306,10 +352,12 @@ const SERVICE_CHECKS: Record<string, () => Promise<CheckResult>> = {
   supabase: checkSupabase,
   embedding: checkEmbedding,
   llm: checkLLM,
+  neo4j: checkNeo4j,
+  graphiti: checkGraphiti,
   app: checkApp,
 };
 
-const SERVICE_ORDER = ['meilisearch', 'redis', 'firecrawl', 'supabase', 'embedding', 'llm', 'app'];
+const SERVICE_ORDER = ['meilisearch', 'redis', 'firecrawl', 'supabase', 'embedding', 'llm', 'neo4j', 'graphiti', 'app'];
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing

@@ -115,11 +115,23 @@
     "right": "Right",
     "far_right": "Far Right"
   },
+  "search": {
+    "title": "Search",
+    "placeholder": "Search articles and stories...",
+    "articles": "Articles",
+    "stories": "Stories",
+    "no_results": "No results found",
+    "no_results_desc": "Try a different search term or switch between articles and stories.",
+    "initial": "Search news",
+    "initial_desc": "Search across articles and stories from Sri Lankan news sources.",
+    "results_count": "{count} result{plural} for \"{query}\""
+  },
   "common": {
     "sources": "sources",
     "articles": "articles",
     "updated": "Updated",
     "read_more": "Read more",
+    "load_more": "Load more",
     "unknown_date": "Unknown date",
     "unknown_source": "Unknown Source",
     "trending": "Trending",

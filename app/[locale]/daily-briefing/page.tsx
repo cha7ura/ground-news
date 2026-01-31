@@ -237,11 +237,11 @@ export default async function DailyBriefingPage({ params }: DailyBriefingPagePro
           <h3 className="font-medium text-gray-900 dark:text-white">Previous Briefings</h3>
           <p className="text-sm text-gray-500 dark:text-gray-400">Browse past daily briefings</p>
         </div>
-        <Link 
-          href="/daily-briefing/archive"
+        <Link
+          href={`/${locale}/daily-briefing/archive`}
           className="flex items-center gap-1 text-brand-primary font-medium hover:underline"
         >
-          View Archive
+          {dict.briefing.view_archive}
           <ArrowRight className="h-4 w-4" />
         </Link>
       </Card>

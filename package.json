@@ -18,6 +18,7 @@
     "pipeline:ingest": "npx tsx scripts/pipeline.ts --ingest",
     "pipeline:enrich": "npx tsx scripts/pipeline.ts --enrich",
     "pipeline:cluster": "npx tsx scripts/pipeline.ts --cluster",
+    "pipeline:graph": "npx tsx scripts/pipeline.ts --graph",
     "pipeline:daemon": "npx tsx scripts/pipeline.ts --daemon",
     "health": "npx tsx scripts/health-check.ts --all",
     "health:meilisearch": "npx tsx scripts/health-check.ts --meilisearch",
@@ -26,6 +27,8 @@
     "health:supabase": "npx tsx scripts/health-check.ts --supabase",
     "health:embedding": "npx tsx scripts/health-check.ts --embedding",
     "health:llm": "npx tsx scripts/health-check.ts --llm",
+    "health:neo4j": "npx tsx scripts/health-check.ts --neo4j",
+    "health:graphiti": "npx tsx scripts/health-check.ts --graphiti",
     "seed:export": "npx tsx scripts/export-data.ts",
     "seed:import": "npx tsx scripts/import-data.ts",
     "seed:import:dry": "npx tsx scripts/import-data.ts --dry-run"

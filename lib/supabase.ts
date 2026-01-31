@@ -162,7 +162,7 @@ export async function getStoryWithArticles(storyId: string): Promise<Story | nul
   return { ...story, articles: articles || [] };
 }
 
-export async function getLatestArticles(limit = 20): Promise<Article[]> {
+export async function getLatestArticles(limit = 20, offset = 0): Promise<Article[]> {
   const { data, error } = await supabase
     .from('articles')
     .select(`
@@ -170,7 +170,7 @@ export async function getLatestArticles(limit = 20): Promise<Article[]> {
       source:sources(id, name, slug, logo_url, bias_score)
     `)
     .order('published_at', { ascending: false })
-    .limit(limit);
+    .range(offset, offset + limit - 1);
 
   if (error) {
     log.error('Error fetching articles', { error });

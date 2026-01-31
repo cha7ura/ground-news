@@ -5,7 +5,8 @@
  *   npx tsx scripts/pipeline.ts --ingest             # ingest from all active RSS sources
  *   npx tsx scripts/pipeline.ts --enrich             # enrich unenriched articles
  *   npx tsx scripts/pipeline.ts --cluster            # cluster enriched articles into stories
- *   npx tsx scripts/pipeline.ts --all                # run full pipeline (ingest → enrich → cluster)
+ *   npx tsx scripts/pipeline.ts --graph              # sync enriched articles to Graphiti knowledge graph
+ *   npx tsx scripts/pipeline.ts --all                # run full pipeline (ingest → enrich → graph → cluster)
  *   npx tsx scripts/pipeline.ts --daemon             # run on schedule (ingest 2h, enrich 3h, cluster 6h)
  *
  * Options:
@@ -49,6 +50,7 @@ const ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1';
 const ollamaLlmModel = process.env.OLLAMA_LLM_MODEL || 'qwen3:1.7b';
 const embeddingModel = process.env.OLLAMA_EMBEDDING_MODEL || 'qwen3-embedding:0.6b';
 const embeddingDims = parseInt(process.env.EMBEDDING_DIMENSIONS || '1024', 10);
+const graphitiUrl = process.env.GRAPHITI_API_URL || 'http://localhost:8000';
 
 // LLM provider: 'openrouter' or 'ollama' — set via --llm flag or LLM_PROVIDER env var
 let llmProvider: 'openrouter' | 'ollama' = (process.env.LLM_PROVIDER as 'openrouter' | 'ollama') || 'openrouter';
@@ -620,6 +622,213 @@ async function runCluster(threshold: number): Promise<number> {
 }
 
 // ===========================================================================
+// STEP 4: GRAPH (Graphiti knowledge graph)
+// ===========================================================================
+
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/[\s_]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 100);
+}
+
+async function extractEntitiesFromContent(
+  articleId: string,
+  title: string,
+  content: string,
+): Promise<void> {
+  try {
+    // Use article content directly — no dependency on Graphiti search
+    const textForExtraction = `Title: ${title}\n\n${content}`.slice(0, 4000);
+
+    const entityPrompt = `/no_think\nExtract named entities from this news article. Return a JSON array.
+
+Article:
+${textForExtraction}
+
+Example output:
+[{"name": "Colombo", "type": "location"}, {"name": "Ranil Wickremesinghe", "type": "person"}, {"name": "Central Bank of Sri Lanka", "type": "organization"}, {"name": "inflation", "type": "topic"}]
+
+Rules:
+- "name" is the actual proper noun from the article (e.g. "Colombo", NOT "location")
+- "type" is one of: person, organization, location, topic
+- Maximum 10 entities
+- Respond with ONLY a JSON array, no other text`;
+
+    const llmController = new AbortController();
+    const llmTimeout = setTimeout(() => llmController.abort(), 120000);
+
+    const llmRes = await fetch(`${ollamaUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: ollamaLlmModel,
+        messages: [{ role: 'user', content: entityPrompt }],
+        temperature: 0.1,
+        max_tokens: 2000,
+      }),
+      signal: llmController.signal,
+    });
+    clearTimeout(llmTimeout);
+
+    if (!llmRes.ok) return;
+
+    const llmData = await llmRes.json() as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+
+    let responseText = llmData.choices?.[0]?.message?.content?.trim() || '';
+    responseText = responseText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    responseText = responseText.replace(/^```json?\n?/i, '').replace(/\n?```$/i, '').trim();
+
+    let entities: Array<{ name: string; type: string }>;
+    try {
+      const parsed = JSON.parse(responseText);
+      entities = Array.isArray(parsed) ? parsed : (parsed.entities || []);
+    } catch {
+      return;
+    }
+
+    const validTypes = new Set(['person', 'organization', 'location', 'topic']);
+    let saved = 0;
+
+    for (const entity of entities) {
+      if (!entity.name || !validTypes.has(entity.type)) continue;
+      // Skip if the LLM output a type name as the entity name (hallucination guard)
+      if (validTypes.has(entity.name.toLowerCase())) continue;
+
+      const slug = slugify(entity.name);
+      if (!slug) continue;
+
+      // Upsert tag
+      const { data: tag, error: tagErr } = await supabase
+        .from('tags')
+        .upsert(
+          { name: entity.name, slug, type: entity.type, is_active: true },
+          { onConflict: 'slug' }
+        )
+        .select('id')
+        .single();
+
+      if (tagErr || !tag) continue;
+
+      // Link to article
+      await supabase
+        .from('article_tags')
+        .upsert(
+          { article_id: articleId, tag_id: tag.id, confidence: 0.8, source: 'ai' },
+          { onConflict: 'article_id,tag_id' }
+        );
+      saved++;
+    }
+
+    if (saved > 0) {
+      log(`    ${GREEN}✓${RESET} Extracted ${saved} entities`);
+    }
+  } catch {
+    // Entity extraction is best-effort — don't fail the sync
+  }
+}
+
+async function runGraph(limit: number): Promise<number> {
+  log(`${BOLD}GRAPH${RESET} — syncing enriched articles to Graphiti knowledge graph`);
+
+  const { data: articles, error } = await supabase
+    .from('articles')
+    .select('id, title, summary, content, source_id, published_at')
+    .not('ai_enriched_at', 'is', null)
+    .is('graphiti_synced_at', null)
+    .not('content', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error || !articles || articles.length === 0) {
+    log(`${YELLOW}–${RESET} No articles pending Graphiti sync`);
+    return 0;
+  }
+
+  // Get source names for descriptions
+  const sourceIds = [...new Set(articles.map(a => a.source_id))];
+  const { data: sources } = await supabase
+    .from('sources')
+    .select('id, name')
+    .in('id', sourceIds);
+  const sourceMap = new Map((sources || []).map(s => [s.id, s.name]));
+
+  log(`Found ${articles.length} articles to sync`);
+  let synced = 0;
+
+  for (const article of articles) {
+    log(`${DIM}Graphiti: ${article.title.slice(0, 55)}...${RESET}`);
+
+    const episodeContent = [
+      article.summary || '',
+      '',
+      (article.content || '').slice(0, 4000),
+    ].join('\n').trim();
+
+    const sourceName = sourceMap.get(article.source_id) || 'Unknown';
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000);
+
+      const res = await fetch(`${graphitiUrl}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          group_id: article.source_id,
+          messages: [{
+            uuid: article.id,
+            name: article.title,
+            role: 'user',
+            role_type: 'user',
+            content: episodeContent,
+            source_description: `News article from ${sourceName}`,
+            timestamp: article.published_at || new Date().toISOString(),
+          }],
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        log(`  ${RED}✗${RESET} Graphiti API error ${res.status}: ${errBody.slice(0, 100)}`);
+        continue;
+      }
+
+      log(`  ${GREEN}✓${RESET} Synced to knowledge graph`);
+
+      // Extract entities from article content via LLM and create local tags
+      await extractEntitiesFromContent(article.id, article.title, article.content || '');
+
+      // Mark as synced
+      const { error: updateErr } = await supabase
+        .from('articles')
+        .update({ graphiti_synced_at: new Date().toISOString() })
+        .eq('id', article.id);
+
+      if (updateErr) {
+        log(`  ${RED}✗${RESET} DB update failed: ${updateErr.message}`);
+      } else {
+        synced++;
+      }
+    } catch (err) {
+      log(`  ${RED}✗${RESET} ${err instanceof Error ? err.message : err}`);
+    }
+
+    // Graphiti does heavy LLM processing per episode — pace requests
+    await new Promise(r => setTimeout(r, 2000));
+  }
+
+  log(`${GREEN}▸${RESET} Graph sync complete: ${synced}/${articles.length} articles synced`);
+  return synced;
+}
+
+// ===========================================================================
 // FULL PIPELINE
 // ===========================================================================
 
@@ -636,6 +845,9 @@ async function runAll(limit: number, threshold: number) {
     // Still try enriching — there may be unenriched articles from previous runs
     await runEnrich(limit);
   }
+  console.log();
+
+  await runGraph(limit);
   console.log();
 
   await runCluster(threshold);
@@ -670,6 +882,8 @@ function runDaemon(limit: number, threshold: number) {
       if (ingested > 0) {
         log(`${DIM}--- Auto-triggering enrich ---${RESET}`);
         await runEnrich(limit);
+        log(`${DIM}--- Auto-triggering graph sync ---${RESET}`);
+        await runGraph(limit);
         log(`${DIM}--- Auto-triggering cluster ---${RESET}`);
         await runCluster(threshold);
       }
@@ -707,11 +921,12 @@ async function main() {
   const args = process.argv.slice(2);
   let limit = 20;
   let threshold = 0.80;
-  let mode: 'ingest' | 'enrich' | 'cluster' | 'all' | 'daemon' | null = null;
+  let mode: 'ingest' | 'enrich' | 'graph' | 'cluster' | 'all' | 'daemon' | null = null;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--ingest') mode = 'ingest';
     if (args[i] === '--enrich') mode = 'enrich';
+    if (args[i] === '--graph') mode = 'graph';
     if (args[i] === '--cluster') mode = 'cluster';
     if (args[i] === '--all') mode = 'all';
     if (args[i] === '--daemon') mode = 'daemon';
@@ -730,8 +945,9 @@ ${GREEN}▸${RESET} News Pipeline Orchestrator
 ${BOLD}Usage:${RESET}
   npx tsx scripts/pipeline.ts --ingest             Ingest from all active RSS sources
   npx tsx scripts/pipeline.ts --enrich             Enrich unenriched articles (LLM + embeddings)
+  npx tsx scripts/pipeline.ts --graph              Sync enriched articles to Graphiti knowledge graph
   npx tsx scripts/pipeline.ts --cluster            Cluster articles into stories
-  npx tsx scripts/pipeline.ts --all                Run full pipeline (ingest → enrich → cluster)
+  npx tsx scripts/pipeline.ts --all                Run full pipeline (ingest → enrich → graph → cluster)
   npx tsx scripts/pipeline.ts --daemon             Run on schedule (2h/3h/6h intervals)
 
 ${BOLD}Options:${RESET}
@@ -751,6 +967,9 @@ ${BOLD}Options:${RESET}
       break;
     case 'enrich':
       await runEnrich(limit);
+      break;
+    case 'graph':
+      await runGraph(limit);
       break;
     case 'cluster':
       await runCluster(threshold);

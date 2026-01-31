@@ -1,6 +1,7 @@
 import { Suspense } from 'react';
 import { StoryCard } from '@/components/story-card';
 import { ArticleCard } from '@/components/article-card';
+import { LoadMoreArticles } from '@/components/load-more-articles';
 import { getStories, getLatestArticles } from '@/lib/supabase';
 import { getDictionary } from '@/lib/i18n/get-dictionary';
 import { Newspaper, TrendingUp, Clock } from 'lucide-react';
@@ -64,6 +65,7 @@ async function LatestArticles({ locale, dict }: { locale: Language; dict: Record
           <ArticleCard key={article.id} article={article} locale={locale} />
         ))}
       </div>
+      <LoadMoreArticles locale={locale} initialOffset={6} label={dict.common.load_more} />
     </div>
   );
 }
