@@ -115,10 +115,10 @@ async function fetchRSS(rssUrl: string): Promise<RSSItem[]> {
       if (imgMatch) imageUrl = imgMatch[1];
     }
 
-    // Filter to 2026 only
+    // Filter to 2025+ only
     if (pubDate) {
       try {
-        if (new Date(pubDate).getFullYear() < 2026) continue;
+        if (new Date(pubDate).getFullYear() < 2025) continue;
       } catch {}
     }
 
@@ -130,7 +130,12 @@ async function fetchRSS(rssUrl: string): Promise<RSSItem[]> {
   return items;
 }
 
-async function scrapeArticle(url: string): Promise<{ markdown: string; title: string | null } | null> {
+async function scrapeArticle(url: string): Promise<{
+  markdown: string;
+  title: string | null;
+  author: string | null;
+  publishedTime: string | null;
+} | null> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30000);
@@ -145,11 +150,41 @@ async function scrapeArticle(url: string): Promise<{ markdown: string; title: st
 
     const data = await res.json() as {
       success: boolean;
-      data?: { markdown?: string; metadata?: { title?: string } };
+      data?: {
+        markdown?: string;
+        metadata?: Record<string, string>;
+      };
     };
 
     if (!data.success || !data.data?.markdown) return null;
-    return { markdown: data.data.markdown, title: data.data.metadata?.title || null };
+    const meta = data.data.metadata || {};
+
+    // Extract date from multiple metadata fields, then fall back to URL pattern
+    const rawDate = meta.publishedTime
+      || meta['article:published_time']
+      || meta.dateModified
+      || meta.modifiedTime
+      || meta['article:modified_time'];
+    let publishedTime: string | null = null;
+    if (rawDate) {
+      try {
+        const d = new Date(rawDate);
+        if (!isNaN(d.getTime())) publishedTime = d.toISOString();
+      } catch {}
+    }
+    if (!publishedTime) {
+      const urlMatch = url.match(/\/(\d{4})\/(\d{2})\/(\d{2})\//);
+      if (urlMatch) {
+        publishedTime = `${urlMatch[1]}-${urlMatch[2]}-${urlMatch[3]}T00:00:00+05:30`;
+      }
+    }
+
+    return {
+      markdown: data.data.markdown,
+      title: meta.title || null,
+      author: meta.author || null,
+      publishedTime,
+    };
   } catch {
     return null;
   }
@@ -200,14 +235,29 @@ async function runIngest(limit: number): Promise<number> {
     for (const item of rssItems.slice(0, limit)) {
       if (existingUrls.has(item.link)) continue;
 
-      const scraped = await scrapeArticle(item.link);
-      if (!scraped || scraped.markdown.length < 100) {
-        log(`  ${RED}✗${RESET} ${item.title.slice(0, 50)}... (scrape failed)`);
+      // Skip known non-article URLs
+      if (
+        /\.(jpg|jpeg|png|gif|svg|webp|pdf)$/i.test(item.link) ||
+        /\/feed\/?$/.test(item.link) ||
+        /\/print\/?$/.test(item.link) ||
+        /\/wp-content\/uploads\//.test(item.link)
+      ) {
+        log(`  ${YELLOW}–${RESET} Skip non-article URL: ${item.link.slice(0, 60)}`);
         continue;
       }
 
+      const scraped = await scrapeArticle(item.link);
+      if (!scraped || scraped.markdown.length < 200) {
+        log(`  ${RED}✗${RESET} ${item.title.slice(0, 50)}... (scrape failed or too short)`);
+        continue;
+      }
+
+      // Prefer Firecrawl publishedTime, fall back to RSS pubDate
       let publishedAt: string | null = null;
-      if (item.pubDate) {
+      if (scraped.publishedTime) {
+        try { publishedAt = new Date(scraped.publishedTime).toISOString(); } catch {}
+      }
+      if (!publishedAt && item.pubDate) {
         try { publishedAt = new Date(item.pubDate).toISOString(); } catch {}
       }
 
@@ -219,6 +269,7 @@ async function runIngest(limit: number): Promise<number> {
         excerpt: item.description?.replace(/<[^>]*>/g, '').slice(0, 300) || null,
         image_url: item.imageUrl,
         published_at: publishedAt,
+        author: scraped.author || null,
         language: source.language,
         original_language: source.language,
         is_processed: false,
@@ -409,7 +460,7 @@ async function runEnrich(limit: number): Promise<number> {
 
   const { data: articles, error } = await supabase
     .from('articles')
-    .select('id, title, content, source_id')
+    .select('id, title, content, source_id, published_at, url')
     .is('ai_enriched_at', null)
     .not('content', 'is', null)
     .order('created_at', { ascending: false })
@@ -422,8 +473,29 @@ async function runEnrich(limit: number): Promise<number> {
 
   log(`Found ${articles.length} unenriched articles`);
   let enriched = 0;
+  let qualitySkipped = 0;
 
   for (const article of articles) {
+    // Quality gate: skip articles with too-short content (likely non-article pages)
+    if ((article.content?.length || 0) < 500) {
+      log(`  ${YELLOW}–${RESET} Skip (short content: ${article.content?.length || 0} chars): ${article.title.slice(0, 50)}`);
+      qualitySkipped++;
+      continue;
+    }
+
+    // Quality gate: skip known non-article URL patterns
+    const url = article.url || '';
+    if (
+      /\.(jpg|jpeg|png|gif|svg|webp|pdf)$/i.test(url) ||
+      /\/feed\/?$/.test(url) ||
+      /\/print\/?$/.test(url) ||
+      /\/wp-content\//.test(url)
+    ) {
+      log(`  ${YELLOW}–${RESET} Skip (non-article URL): ${url.slice(0, 60)}`);
+      qualitySkipped++;
+      continue;
+    }
+
     log(`${DIM}Processing: ${article.title.slice(0, 55)}...${RESET}`);
 
     // LLM analysis
@@ -470,6 +542,9 @@ async function runEnrich(limit: number): Promise<number> {
     await new Promise(r => setTimeout(r, 500));
   }
 
+  if (qualitySkipped > 0) {
+    log(`${YELLOW}–${RESET} Quality gate skipped: ${qualitySkipped} articles (short content or non-article URL)`);
+  }
   log(`${GREEN}▸${RESET} Enrich complete: ${enriched}/${articles.length} articles enriched`);
   return enriched;
 }

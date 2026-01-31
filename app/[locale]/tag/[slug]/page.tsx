@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Tag as TagIcon, Newspaper } from 'lucide-react';
+import { ArrowLeft, Tag as TagIcon, Newspaper, User } from 'lucide-react';
 import {
   getTagBySlug,
   getArticlesByTag,
@@ -9,10 +9,12 @@ import {
 } from '@/lib/supabase';
 import { ArticleCard } from '@/components/article-card';
 import { StoryCard } from '@/components/story-card';
+import { PersonTimeline } from '@/components/person-timeline';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { getDictionary } from '@/lib/i18n/get-dictionary';
 import { getLocalizedTagName, type Language, type TagType } from '@/lib/types';
+import { getOrGeneratePersonSummary } from '@/lib/person-summary';
 
 interface TagPageProps {
   params: { slug: string; locale: string };
@@ -58,11 +60,18 @@ export default async function TagPage({ params }: TagPageProps) {
     notFound();
   }
 
+  const isPerson = tag.type === 'person';
+
   const [articles, stories, relatedTags] = await Promise.all([
-    getArticlesByTag(params.slug, 20),
+    getArticlesByTag(params.slug, isPerson ? 50 : 20),
     getStoriesByTag(params.slug, 5),
     getRelatedTags(tag.id, 10),
   ]);
+
+  // Generate AI summary for person tags
+  const personSummary = isPerson
+    ? await getOrGeneratePersonSummary(tag, articles)
+    : null;
 
   const tagName = getLocalizedTagName(tag, locale);
   const typeLabel = TAG_TYPE_LABELS[locale][tag.type];
@@ -81,7 +90,11 @@ export default async function TagPage({ params }: TagPageProps) {
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-4">
           <div className="p-2 bg-brand-primary/10 rounded-lg">
-            <TagIcon className="h-6 w-6 text-brand-primary" />
+            {isPerson ? (
+              <User className="h-6 w-6 text-brand-primary" />
+            ) : (
+              <TagIcon className="h-6 w-6 text-brand-primary" />
+            )}
           </div>
           <div>
             <div className="flex items-center gap-2">
@@ -92,15 +105,17 @@ export default async function TagPage({ params }: TagPageProps) {
                 {typeLabel}
               </span>
             </div>
-            {tag.description && (
-              <p className="text-gray-600 dark:text-gray-400 mt-1">
-                {locale === 'si' && tag.description_si ? tag.description_si : tag.description}
-              </p>
-            )}
           </div>
         </div>
 
-        <div className="flex items-center gap-4 text-sm text-gray-500 dark:text-gray-400">
+        {/* Person summary or tag description */}
+        {(personSummary || tag.description) && (
+          <p className="text-gray-600 dark:text-gray-400 mt-2 leading-relaxed max-w-3xl">
+            {personSummary || (locale === 'si' && tag.description_si ? tag.description_si : tag.description)}
+          </p>
+        )}
+
+        <div className="flex items-center gap-4 text-sm text-gray-500 dark:text-gray-400 mt-4">
           <span className="flex items-center gap-1">
             <Newspaper className="h-4 w-4" />
             {tag.article_count} {dict.common.articles}
@@ -123,26 +138,35 @@ export default async function TagPage({ params }: TagPageProps) {
             </section>
           )}
 
-          {/* All articles with this tag */}
-          <section>
-            <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
-              {dict.tags.all_articles} ({articles.length})
-            </h2>
-            {articles.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {articles.map((article) => (
-                  <ArticleCard key={article.id} article={article} locale={locale} />
-                ))}
-              </div>
-            ) : (
-              <Card className="p-12 text-center">
-                <Newspaper className="h-12 w-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
-                <p className="text-gray-500 dark:text-gray-400">
-                  {locale === 'si' ? 'මෙම ටැගය සමඟ ලිපි නැත.' : 'No articles with this tag yet.'}
-                </p>
-              </Card>
-            )}
-          </section>
+          {/* Person timeline or article grid */}
+          {isPerson && articles.length > 0 ? (
+            <section>
+              <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
+                {dict.tags.timeline || 'Timeline'}
+              </h2>
+              <PersonTimeline articles={articles} locale={locale} />
+            </section>
+          ) : (
+            <section>
+              <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
+                {dict.tags.all_articles} ({articles.length})
+              </h2>
+              {articles.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {articles.map((article) => (
+                    <ArticleCard key={article.id} article={article} locale={locale} />
+                  ))}
+                </div>
+              ) : (
+                <Card className="p-12 text-center">
+                  <Newspaper className="h-12 w-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
+                  <p className="text-gray-500 dark:text-gray-400">
+                    {locale === 'si' ? 'මෙම ටැගය සමඟ ලිපි නැත.' : 'No articles with this tag yet.'}
+                  </p>
+                </Card>
+              )}
+            </section>
+          )}
         </div>
 
         {/* Sidebar */}
