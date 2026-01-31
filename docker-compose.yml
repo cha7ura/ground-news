@@ -1,0 +1,94 @@
+services:
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    container_name: ground-news-meilisearch
+    ports:
+      - "7700:7700"
+    environment:
+      - MEILI_MASTER_KEY=${MEILISEARCH_MASTER_KEY:-masterKey}
+      - MEILI_ENV=development
+    volumes:
+      - meilisearch_data:/meili_data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: ground-news-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  firecrawl-playwright:
+    image: mcr.microsoft.com/playwright:v1.49.1-noble
+    container_name: ground-news-playwright
+    command: npx --yes playwright@1.49.1 run-server --port 3000 --host 0.0.0.0
+    ports:
+      - "3100:3000"
+    restart: unless-stopped
+
+  firecrawl-postgres:
+    image: postgres:16-alpine
+    container_name: ground-news-firecrawl-postgres
+    environment:
+      - POSTGRES_USER=firecrawl
+      - POSTGRES_PASSWORD=firecrawl
+      - POSTGRES_DB=firecrawl
+    volumes:
+      - firecrawl_postgres_data:/var/lib/postgresql/data
+      - ./docker/firecrawl-init.sql:/docker-entrypoint-initdb.d/nuq.sql:ro
+    restart: unless-stopped
+
+  firecrawl-rabbitmq:
+    image: rabbitmq:3-alpine
+    container_name: ground-news-firecrawl-rabbitmq
+    restart: unless-stopped
+
+  firecrawl:
+    image: ghcr.io/firecrawl/firecrawl:latest
+    container_name: ground-news-firecrawl
+    ports:
+      - "3002:3002"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - REDIS_RATE_LIMIT_URL=redis://redis:6379
+      - PLAYWRIGHT_MICROSERVICE_URL=http://firecrawl-playwright:3000
+      - NUQ_DATABASE_URL=postgresql://firecrawl:firecrawl@firecrawl-postgres:5432/firecrawl
+      - NUQ_RABBITMQ_URL=amqp://guest:guest@firecrawl-rabbitmq:5672
+      - PORT=3002
+      - HOST=0.0.0.0
+      - NUM_WORKERS_PER_QUEUE=2
+      - USE_DB_AUTHENTICATION=false
+    depends_on:
+      - redis
+      - firecrawl-playwright
+      - firecrawl-postgres
+      - firecrawl-rabbitmq
+    restart: unless-stopped
+
+  # Embedding model server (Ollama)
+  # Serves Qwen3-Embedding via OpenAI-compatible /v1/embeddings endpoint
+  # On first start, pulls the model (~400MB for 0.6B Q4). Subsequent starts use cache.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ground-news-ollama
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_KEEP_ALIVE=-1
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  meilisearch_data:
+  redis_data:
+  ollama_data:
+  firecrawl_postgres_data:

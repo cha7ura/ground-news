@@ -1,0 +1,139 @@
+{
+  "nav": {
+    "home": "Home",
+    "daily_briefing": "Daily Briefing",
+    "blindspots": "Blindspots",
+    "topics": "Topics",
+    "sources": "Sources"
+  },
+  "home": {
+    "hero_title": "See Every Side of Every Story",
+    "hero_subtitle": "Compare how different Sri Lankan news sources cover the same stories. Understand media bias and get a more complete picture.",
+    "top_stories": "Top Stories",
+    "latest_articles": "Latest Articles",
+    "no_stories_title": "No stories yet",
+    "no_stories_desc": "Stories will appear here once articles are ingested and clustered."
+  },
+  "story": {
+    "back": "Back to stories",
+    "coverage_breakdown": "Coverage Breakdown",
+    "coverage_desc": "This story has been covered by {count} source{plural} with varying political perspectives.",
+    "compare_sources": "Compare Sources",
+    "left_leaning": "Left-leaning",
+    "center": "Center",
+    "right_leaning": "Right-leaning",
+    "no_coverage": "No {bias} coverage",
+    "all_articles": "All Articles"
+  },
+  "sources": {
+    "title": "News Sources",
+    "subtitle": "Browse Sri Lankan news sources and their bias ratings. Bias scores are AI-generated based on article analysis.",
+    "understanding_bias": "Understanding Bias Ratings",
+    "left_desc": "Opposition/progressive-leaning coverage",
+    "center_desc": "Balanced/neutral coverage",
+    "right_desc": "Government/conservative-leaning coverage",
+    "no_sources": "No sources configured yet.",
+    "articles": "articles",
+    "factuality": "Factuality",
+    "recent_articles": "Recent Articles",
+    "no_articles": "No articles from this source yet.",
+    "all_sources": "All sources",
+    "bias_position": "Bias Position",
+    "bias_score": "Bias Score",
+    "language": "Language"
+  },
+  "topics": {
+    "title": "Topics",
+    "subtitle": "Browse news by topic. Each story is automatically categorized using AI analysis.",
+    "how_topics_work": "How Topics Work",
+    "how_topics_desc": "Our AI analyzes each article to identify relevant topics. Articles can have multiple topics associated with them. Topic classification helps you find related coverage and understand how different stories connect."
+  },
+  "topic_names": {
+    "politics": "Politics",
+    "economy": "Economy",
+    "business": "Business",
+    "cricket": "Cricket",
+    "sports": "Sports",
+    "tourism": "Tourism",
+    "education": "Education",
+    "health": "Health",
+    "crime": "Crime",
+    "environment": "Environment",
+    "technology": "Technology",
+    "international": "International",
+    "entertainment": "Entertainment"
+  },
+  "topic_descriptions": {
+    "politics": "Government, elections, policy decisions, and political developments",
+    "economy": "Economic indicators, inflation, trade, and fiscal policy",
+    "business": "Corporate news, startups, markets, and industry updates",
+    "cricket": "Sri Lanka cricket team, domestic leagues, and international matches",
+    "sports": "Football, rugby, athletics, and other sporting events",
+    "tourism": "Travel, hospitality, tourist arrivals, and destinations",
+    "education": "Schools, universities, examinations, and educational policy",
+    "health": "Healthcare, medical news, public health, and wellness",
+    "crime": "Law enforcement, court cases, and crime reports",
+    "environment": "Climate, wildlife, conservation, and environmental issues",
+    "technology": "Tech industry, digital transformation, and innovation",
+    "international": "Global affairs, diplomacy, and foreign relations",
+    "entertainment": "Movies, music, TV, celebrities, and cultural events"
+  },
+  "blindspots": {
+    "title": "Blindspot",
+    "subtitle": "Stories with coverage gaps",
+    "what_are": "What are Blindspots?",
+    "what_are_desc": "Blindspots are stories that are disproportionately covered by one side of the political spectrum. These stories may be underreported by left-leaning or right-leaning sources, giving you an incomplete picture. Understanding blindspots helps you see what you might be missing.",
+    "all": "All Blindspots",
+    "no_left": "No Left Coverage",
+    "no_right": "No Right Coverage",
+    "no_blindspots_title": "No blindspots found",
+    "no_blindspots_desc": "All current stories have coverage from across the political spectrum.",
+    "newsletter_title": "Blindspot Report",
+    "newsletter_desc": "Get weekly blindspot updates delivered to your inbox",
+    "subscribe": "Subscribe"
+  },
+  "briefing": {
+    "title": "Daily Briefing",
+    "subtitle": "Your daily digest of the most important Sri Lankan news stories, with coverage from multiple sources across the political spectrum.",
+    "stories": "stories",
+    "articles": "articles",
+    "read_time": "{time}m read",
+    "original_reporting": "{pct}% of sources are Original Reporting",
+    "no_briefing": "No briefing available",
+    "no_briefing_desc": "Check back later for today's news briefing.",
+    "more_stories": "More Stories",
+    "previous": "Previous Briefings",
+    "previous_desc": "Browse past daily briefings",
+    "view_archive": "View Archive"
+  },
+  "bias": {
+    "left_leaning": "Left-leaning",
+    "center": "Center",
+    "right_leaning": "Right-leaning",
+    "far_left": "Far Left",
+    "left": "Left",
+    "right": "Right",
+    "far_right": "Far Right"
+  },
+  "common": {
+    "sources": "sources",
+    "articles": "articles",
+    "updated": "Updated",
+    "read_more": "Read more",
+    "unknown_date": "Unknown date",
+    "unknown_source": "Unknown Source",
+    "trending": "Trending",
+    "bias_disclaimer": "Compare news coverage across Sri Lankan media sources. Bias ratings are AI-generated and for informational purposes only."
+  },
+  "tags": {
+    "related_stories": "Related Stories",
+    "all_articles": "All Articles",
+    "related_tags": "Related Tags",
+    "source_coverage": "Source Coverage",
+    "popular_tags": "Popular Tags"
+  },
+  "footer": {
+    "brand": "Ground News Sri Lanka",
+    "bias_ratings": "Bias Ratings"
+  }
+}
