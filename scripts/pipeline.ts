@@ -138,7 +138,7 @@ async function scrapeArticle(url: string): Promise<{
 } | null> {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), 120000);
 
     const res = await fetch(`${firecrawlUrl}/v1/scrape`, {
       method: 'POST',
@@ -355,7 +355,7 @@ async function analyzeWithOpenRouter(title: string, content: string): Promise<An
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), 120000);
 
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -429,7 +429,7 @@ async function analyzeArticle(title: string, content: string): Promise<AnalysisR
 async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), 120000);
 
     const res = await fetch(`${ollamaUrl}/embeddings`, {
       method: 'POST',

@@ -152,6 +152,7 @@ export async function getStoryWithArticles(storyId: string): Promise<Story | nul
       source:sources(*)
     `)
     .eq('story_id', storyId)
+    .not('published_at', 'is', null)
     .order('published_at', { ascending: false });
 
   if (articlesError) {
@@ -169,6 +170,7 @@ export async function getLatestArticles(limit = 20, offset = 0): Promise<Article
       *,
       source:sources(id, name, slug, logo_url, bias_score)
     `)
+    .not('published_at', 'is', null)
     .order('published_at', { ascending: false })
     .range(offset, offset + limit - 1);
 
@@ -215,6 +217,7 @@ export async function getArticlesBySource(sourceId: string, limit = 20): Promise
     .from('articles')
     .select('*')
     .eq('source_id', sourceId)
+    .not('published_at', 'is', null)
     .order('published_at', { ascending: false })
     .limit(limit);
 
@@ -379,6 +382,7 @@ export async function getArticlesByTag(tagSlug: string, limit = 20): Promise<Art
       source:sources(id, name, slug, logo_url, bias_score)
     `)
     .in('id', articleIds)
+    .not('published_at', 'is', null)
     .order('published_at', { ascending: false });
 
   if (error) {
