@@ -178,7 +178,7 @@ export default async function TagPage({ params }: TagPageProps) {
               <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-4">
                 {locale === 'si' ? 'කාල රේඛාව' : 'Timeline'} ({articles.length})
               </h2>
-              <PersonTimeline articles={articles} locale={locale} />
+              <PersonTimeline articles={articles} locale={locale} showCasualties />
             </section>
           ) : (
             <section>

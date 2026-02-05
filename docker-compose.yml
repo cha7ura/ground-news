@@ -67,9 +67,9 @@ services:
       - firecrawl-rabbitmq
     restart: unless-stopped
 
-  # Embedding model server (Ollama)
-  # Serves Qwen3-Embedding via OpenAI-compatible /v1/embeddings endpoint
-  # On first start, pulls the model (~400MB for 0.6B Q4). Subsequent starts use cache.
+  # Local LLM + Embedding model server (Ollama)
+  # Serves qwen3:1.7b (LLM) + qwen3-embedding:0.6b (embeddings) via OpenAI-compatible API
+  # Needs ~4GB RAM for both models loaded concurrently
   ollama:
     image: ollama/ollama:latest
     container_name: ground-news-ollama
@@ -78,8 +78,13 @@ services:
     environment:
       - OLLAMA_HOST=0.0.0.0:11434
       - OLLAMA_KEEP_ALIVE=-1
+      - OLLAMA_NUM_PARALLEL=1
     volumes:
       - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: 6g
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]

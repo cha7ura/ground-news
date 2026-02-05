@@ -138,6 +138,11 @@ export interface ArticleTag {
 }
 
 // ============================================
+// Article type classification
+// ============================================
+export type ArticleType = 'news' | 'opinion' | 'analysis' | 'interview';
+
+// ============================================
 // Locale helpers
 // ============================================
 

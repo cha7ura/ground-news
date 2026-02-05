@@ -12,7 +12,7 @@
 
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { chromium } from 'playwright';
+import { chromium } from 'playwright-core';
 
 // ---------------------------------------------------------------------------
 // Load env.local

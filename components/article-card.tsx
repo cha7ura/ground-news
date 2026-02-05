@@ -1,10 +1,10 @@
 'use client';
 
 import Image from 'next/image';
-import { ExternalLink, Clock } from 'lucide-react';
+import { ExternalLink, Clock, BookOpen } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Article } from '@/lib/supabase';
-import { formatRelativeTime, truncate, cn, getBiasBgColor } from '@/lib/utils';
+import { formatRelativeTime, truncate, cn, getBiasBgColor, getArticleTypeBadge } from '@/lib/utils';
 import { getBiasLabel, getLocalizedTitle, getLocalizedSummary, type Language } from '@/lib/types';
 
 interface ArticleCardProps {
@@ -27,6 +27,7 @@ export function ArticleCard({
   const biasScore = article.ai_bias_score ?? source?.bias_score ?? 0;
   const title = getLocalizedTitle(article, locale);
   const articleSummary = getLocalizedSummary(article, locale);
+  const typeBadge = getArticleTypeBadge(article.article_type, locale);
 
   return (
     <a
@@ -61,23 +62,30 @@ export function ArticleCard({
           {/* Source & Bias */}
           {(showSource || showBias) && (
             <div className="flex items-center justify-between mb-2">
-              {showSource && source && (
-                <div className="flex items-center gap-2">
-                  {source.logo_url && (
-                    <Image
-                      src={source.logo_url}
-                      alt={source.name}
-                      width={16}
-                      height={16}
-                      className="rounded"
-                      unoptimized
-                    />
-                  )}
-                  <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
-                    {source.name}
+              <div className="flex items-center gap-2">
+                {showSource && source && (
+                  <>
+                    {source.logo_url && (
+                      <Image
+                        src={source.logo_url}
+                        alt={source.name}
+                        width={16}
+                        height={16}
+                        className="rounded"
+                        unoptimized
+                      />
+                    )}
+                    <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
+                      {source.name}
+                    </span>
+                  </>
+                )}
+                {typeBadge && (
+                  <span className={cn('text-xs px-1.5 py-0.5 rounded font-medium', typeBadge.className)}>
+                    {typeBadge.label}
                   </span>
-                </div>
-              )}
+                )}
+              </div>
               {showBias && biasScore !== null && (
                 <span className={cn(
                   'text-xs px-2 py-0.5 rounded-full text-white',
@@ -117,13 +125,21 @@ export function ArticleCard({
 
           {/* Meta */}
           <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 mt-auto pt-2 border-t border-gray-100 dark:border-gray-800">
-            <span className="flex items-center gap-1">
-              <Clock className="h-3.5 w-3.5" />
-              {article.published_at 
-                ? formatRelativeTime(article.published_at)
-                : 'Unknown date'
-              }
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="flex items-center gap-1">
+                <Clock className="h-3.5 w-3.5" />
+                {article.published_at
+                  ? formatRelativeTime(article.published_at)
+                  : 'Unknown date'
+                }
+              </span>
+              {article.reading_time && (
+                <span className="flex items-center gap-1">
+                  <BookOpen className="h-3 w-3" />
+                  {article.reading_time} min
+                </span>
+              )}
+            </div>
             <ExternalLink className="h-3.5 w-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
           </div>
         </div>
@@ -142,6 +158,7 @@ export function ArticleCardHorizontal({
   const source = article.source;
   const biasScore = article.ai_bias_score ?? source?.bias_score ?? 0;
   const horizTitle = getLocalizedTitle(article, locale);
+  const typeBadge = getArticleTypeBadge(article.article_type, locale);
 
   return (
     <a
@@ -171,11 +188,18 @@ export function ArticleCardHorizontal({
           <div className="flex-1 min-w-0">
             {/* Source & Bias */}
             <div className="flex items-center justify-between mb-1">
-              {source && (
-                <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
-                  {source.name}
-                </span>
-              )}
+              <div className="flex items-center gap-2">
+                {source && (
+                  <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
+                    {source.name}
+                  </span>
+                )}
+                {typeBadge && (
+                  <span className={cn('text-xs px-1.5 py-0.5 rounded font-medium', typeBadge.className)}>
+                    {typeBadge.label}
+                  </span>
+                )}
+              </div>
               <span className={cn(
                 'text-xs px-2 py-0.5 rounded-full text-white',
                 getBiasBgColor(biasScore)
@@ -193,6 +217,12 @@ export function ArticleCardHorizontal({
             <div className="flex items-center gap-2 mt-2 text-xs text-gray-500 dark:text-gray-400">
               {article.published_at && (
                 <span>{formatRelativeTime(article.published_at)}</span>
+              )}
+              {article.reading_time && (
+                <>
+                  <span>•</span>
+                  <span>{article.reading_time} min</span>
+                </>
               )}
               {article.author && (
                 <>

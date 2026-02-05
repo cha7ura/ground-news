@@ -45,7 +45,6 @@ const supabase = createClient(
 );
 
 const PLAYWRIGHT_WS = process.env.PLAYWRIGHT_WS_URL || 'ws://localhost:3100';
-const firecrawlUrl = process.env.FIRECRAWL_API_URL || 'http://localhost:3002';
 const openrouterKey = process.env.OPENROUTER_API_KEY!;
 const openrouterModel = process.env.OPENROUTER_MODEL || 'openai/gpt-4o-mini';
 const ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1';
@@ -70,6 +69,113 @@ function timestamp(): string {
 
 function log(msg: string) {
   console.log(`${DIM}[${timestamp()}]${RESET} ${msg}`);
+}
+
+// ---------------------------------------------------------------------------
+// Per-source scraping configuration
+// ---------------------------------------------------------------------------
+
+interface ScrapeConfig {
+  method?: string;
+  api_url?: string;
+  edition_sections?: string[];
+  cloudflare?: boolean;
+  platform?: string;
+  selectors?: {
+    title?: string[];
+    author?: string[];
+    date?: string[];
+    content?: string[];
+    image?: string[];
+  };
+  rateLimitMs?: number;
+}
+
+/** Default CSS selectors — work for most WordPress/news sites */
+const DEFAULT_SELECTORS = {
+  title: [
+    'h1.entry-title', 'h1.article-title', 'h1.post-title',
+    'article h1', '.article-header h1', 'h1',
+  ],
+  author: [
+    '.author-name', '.byline', '.article-author', '.writer-name',
+    '[rel="author"]', '.post-author',
+  ],
+  date: [
+    'time[datetime]', '.publish-date', '.article-date',
+    '.post-date', '.entry-date', '.date', '.news-datestamp',
+  ],
+  content: [
+    'article .entry-content', '.article-body', '.article-content',
+    '.story-text', '.inner-content', '.entry-content', '.post-content',
+    '.content-area', '#article-body', '.inner-fontstyle', 'article', 'main .content',
+  ],
+  image: [
+    '.article-image img', 'article img', '.featured-image img',
+  ],
+};
+
+/** Default meta tags to check for dates and authors */
+const DEFAULT_DATE_META = [
+  'article:published_time', 'og:article:published_time',
+  'datePublished', 'publishedTime', 'dateModified', 'modifiedTime',
+];
+const DEFAULT_AUTHOR_META = ['author', 'article:author'];
+
+/** Merge source-specific selectors with defaults */
+function getSelectors(config: ScrapeConfig): Required<NonNullable<ScrapeConfig['selectors']>> {
+  const s = config.selectors || {};
+  return {
+    title: s.title?.length ? s.title : DEFAULT_SELECTORS.title,
+    author: s.author?.length ? s.author : DEFAULT_SELECTORS.author,
+    date: s.date?.length ? s.date : DEFAULT_SELECTORS.date,
+    content: s.content?.length ? s.content : DEFAULT_SELECTORS.content,
+    image: s.image?.length ? s.image : DEFAULT_SELECTORS.image,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Text normalization and deduplication helpers
+// ---------------------------------------------------------------------------
+
+/** Normalize Unicode text — fix common encoding issues in Sinhala/Tamil content */
+function normalizeText(text: string): string {
+  return text
+    // Normalize Unicode (NFC for composed form — important for Sinhala conjuncts)
+    .normalize('NFC')
+    // Fix HTML entities that weren't decoded
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&mdash;/g, '—')
+    .replace(/&ndash;/g, '–')
+    .replace(/&rsquo;/g, '\u2019')
+    .replace(/&lsquo;/g, '\u2018')
+    .replace(/&rdquo;/g, '\u201D')
+    .replace(/&ldquo;/g, '\u201C')
+    .replace(/&hellip;/g, '…')
+    // Decode numeric HTML entities (&#8217; &#x2019; etc.)
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(parseInt(code, 10)))
+    .replace(/&#x([0-9A-Fa-f]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    // Fix double-encoded UTF-8 (shows as Ã¢â‚¬ etc.)
+    .replace(/Ã¢â‚¬â„¢/g, "'")
+    .replace(/Ã¢â‚¬â€/g, "—")
+    .replace(/Ã¢â‚¬Â¦/g, "…")
+    // Collapse multiple whitespace
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Normalize title for deduplication comparison */
+function normalizeTitle(title: string): string {
+  return title
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\u200C\u200D]/gu, '') // Keep letters+numbers+ZWJ/ZWNJ (needed for Sinhala/Tamil conjuncts)
+    .trim();
 }
 
 // ===========================================================================
@@ -168,70 +274,207 @@ function extractDateFromText(text: string): string | null {
     } catch {}
   }
 
+  // Pattern 4: "DD Month YYYY" (e.g., "4 February 2026", "05 Feb 2026")
+  const dmyLongRe = /\b(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{4})\b/i;
+  const m4 = text.match(dmyLongRe);
+  if (m4) {
+    try {
+      const d = new Date(`${m4[2]} ${m4[1]}, ${m4[3]}`);
+      if (!isNaN(d.getTime()) && d.getFullYear() >= 2006) return d.toISOString();
+    } catch {}
+  }
+
+  // Pattern 5: "DD/MM/YYYY" or "DD-MM-YYYY" (Sri Lankan DMY format)
+  const dmyRe = /\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b/;
+  const m5 = text.match(dmyRe);
+  if (m5) {
+    try {
+      const d = new Date(`${m5[3]}-${m5[2].padStart(2, '0')}-${m5[1].padStart(2, '0')}T00:00:00+05:30`);
+      if (!isNaN(d.getTime()) && d.getFullYear() >= 2006) return d.toISOString();
+    } catch {}
+  }
+
   return null;
 }
 
-async function scrapeArticle(url: string): Promise<{
-  markdown: string;
+/**
+ * Scrape a single article page using Playwright.
+ * Uses per-source CSS selectors (with defaults) to extract title, content, date, author, image.
+ * Date extraction waterfall: meta tags → CSS selectors → text patterns → URL pattern.
+ */
+async function scrapeArticlePage(
+  context: { newPage: () => Promise<any> },
+  url: string,
+  config: ScrapeConfig,
+  rssPubDate: string | null,
+): Promise<{
+  content: string;
   title: string | null;
   author: string | null;
   publishedTime: string | null;
+  imageUrl: string | null;
 } | null> {
+  const sel = getSelectors(config);
+  let page: any = null;
+
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120000);
+    page = await context.newPage();
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-    const res = await fetch(`${firecrawlUrl}/v1/scrape`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, formats: ['markdown'] }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+    // Wait for Cloudflare challenge if needed
+    if (config.cloudflare) {
+      for (let i = 0; i < 5; i++) {
+        await page.waitForTimeout(3000);
+        const title = await page.title();
+        if (!title.includes('Just a moment') && !title.includes('Checking')) break;
+      }
+    } else {
+      await page.waitForTimeout(2000);
+    }
 
-    const data = await res.json() as {
-      success: boolean;
-      data?: {
-        markdown?: string;
-        metadata?: Record<string, string>;
-      };
-    };
+    // Extract everything in a single page.evaluate call
+    const result = await page.evaluate((params: {
+      sel: typeof sel;
+      dateMetaTags: string[];
+      authorMetaTags: string[];
+    }) => {
+      const { sel: s, dateMetaTags, authorMetaTags } = params;
 
-    if (!data.success || !data.data?.markdown) return null;
-    const meta = data.data.metadata || {};
+      // Helper: try a list of CSS selectors, return first non-empty textContent
+      function trySelectors(selectors: string[]): string {
+        for (const css of selectors) {
+          // Handle meta tag selectors
+          if (css.startsWith('meta[')) {
+            const el = document.querySelector(css) as HTMLMetaElement;
+            if (el?.content?.trim()) return el.content.trim();
+            continue;
+          }
+          const el = document.querySelector(css);
+          if (el && el.textContent && el.textContent.trim().length > 0) {
+            return el.textContent.trim();
+          }
+        }
+        return '';
+      }
 
-    // Extract date: try metadata fields first
-    const rawDate = meta.publishedTime
-      || meta['article:published_time']
-      || meta.dateModified
-      || meta.modifiedTime
-      || meta['article:modified_time'];
+      // Helper: get attribute from first matching selector
+      function trySelectorsAttr(selectors: string[], attr: string): string {
+        for (const css of selectors) {
+          const el = document.querySelector(css);
+          if (el) {
+            const val = el.getAttribute(attr);
+            if (val) return val.trim();
+          }
+        }
+        return '';
+      }
+
+      // --- Collect all meta tags ---
+      const metas: Record<string, string> = {};
+      document.querySelectorAll('meta').forEach((m) => {
+        const name = m.getAttribute('property') || m.getAttribute('name') || '';
+        const content = m.getAttribute('content') || '';
+        if (name && content) metas[name] = content;
+      });
+
+      // --- Title ---
+      const title = trySelectors(s.title) || metas['og:title'] || '';
+
+      // --- Author ---
+      let author = '';
+      // Try meta tags first
+      for (const key of authorMetaTags) {
+        if (metas[key]) { author = metas[key]; break; }
+      }
+      // Then CSS selectors
+      if (!author) author = trySelectors(s.author);
+
+      // --- Date ---
+      let dateStr = '';
+      // 1. Try meta tags
+      for (const key of dateMetaTags) {
+        if (metas[key]) { dateStr = metas[key]; break; }
+      }
+      // 2. Try CSS selectors with datetime attribute
+      if (!dateStr) dateStr = trySelectorsAttr(s.date, 'datetime');
+      // 3. Try CSS selectors text content
+      if (!dateStr) dateStr = trySelectors(s.date);
+
+      // --- Content ---
+      let content = '';
+      for (const css of s.content) {
+        const el = document.querySelector(css);
+        if (el && el.textContent && el.textContent.trim().length > 200) {
+          content = el.textContent.trim();
+          break;
+        }
+      }
+      if (!content) content = document.body?.textContent?.trim() || '';
+
+      // --- Image ---
+      const imageUrl = metas['og:image']
+        || trySelectorsAttr(s.image, 'src')
+        || (document.querySelector('article img') as HTMLImageElement)?.src
+        || '';
+
+      // Body text for date fallback
+      const bodyText = document.body?.textContent?.trim().slice(0, 3000) || '';
+
+      return { title, author, dateStr, content, imageUrl, bodyText };
+    }, { sel, dateMetaTags: DEFAULT_DATE_META, authorMetaTags: DEFAULT_AUTHOR_META });
+
+    await page.close();
+    page = null;
+
+    if (!result.content || result.content.length < 100) return null;
+
+    // --- Date extraction waterfall ---
     let publishedTime: string | null = null;
-    if (rawDate) {
+
+    // 1. Meta tag / selector date
+    if (result.dateStr) {
       try {
-        const d = new Date(rawDate);
-        if (!isNaN(d.getTime())) publishedTime = d.toISOString();
+        const d = new Date(result.dateStr);
+        if (!isNaN(d.getTime()) && d.getFullYear() >= 2006) publishedTime = d.toISOString();
       } catch {}
     }
-    // Fallback: URL path date pattern (e.g. /2026/02/04/)
+
+    // 2. Text extraction from date selector text (may be human-readable)
+    if (!publishedTime && result.dateStr) {
+      publishedTime = extractDateFromText(result.dateStr);
+    }
+
+    // 3. URL path pattern (e.g. /2026/02/04/)
     if (!publishedTime) {
       const urlMatch = url.match(/\/(\d{4})\/(\d{2})\/(\d{2})\//);
       if (urlMatch) {
-        publishedTime = `${urlMatch[1]}-${urlMatch[2]}-${urlMatch[3]}T00:00:00+05:30`;
+        const d = new Date(`${urlMatch[1]}-${urlMatch[2]}-${urlMatch[3]}T00:00:00+05:30`);
+        if (!isNaN(d.getTime()) && d.getFullYear() >= 2006) publishedTime = d.toISOString();
       }
     }
-    // Fallback: extract date from page text (for sites like Ada Derana with no meta tags)
+
+    // 4. Page body text extraction (for sites like Ada Derana with date in text)
     if (!publishedTime) {
-      publishedTime = extractDateFromText(data.data.markdown.slice(0, 2000));
+      publishedTime = extractDateFromText(result.bodyText);
+    }
+
+    // 5. RSS pubDate as final fallback
+    if (!publishedTime && rssPubDate) {
+      try {
+        const d = new Date(rssPubDate);
+        if (!isNaN(d.getTime()) && d.getFullYear() >= 2006) publishedTime = d.toISOString();
+      } catch {}
     }
 
     return {
-      markdown: data.data.markdown,
-      title: meta.title || null,
-      author: meta.author || null,
+      content: normalizeText(result.content),
+      title: result.title ? normalizeText(result.title) : null,
+      author: result.author ? normalizeText(result.author) : null,
       publishedTime,
+      imageUrl: result.imageUrl || null,
     };
-  } catch {
+  } catch (err) {
+    if (page) await page.close().catch(() => {});
     return null;
   }
 }
@@ -258,70 +501,87 @@ function extractExcerpt(markdown: string, maxLen = 300): string | null {
 }
 
 /**
- * Scrape article links from a source's listing page (fallback when RSS is broken).
+ * Scrape article links from a source's listing page using Playwright (fallback when RSS is broken).
  * Returns a list of {link, title} extracted from anchor tags in the page HTML.
  */
-async function scrapeListingPage(sourceUrl: string, sourceSlug: string, limit: number): Promise<RSSItem[]> {
+async function scrapeListingPage(
+  browser: any,
+  sourceUrl: string,
+  sourceSlug: string,
+  limit: number,
+): Promise<RSSItem[]> {
+  if (!browser) return [];
+
   // Source-specific listing page URLs
   let listingUrl = sourceUrl;
   if (sourceSlug === 'ada-derana-si') {
-    listingUrl = 'https://sinhala.adaderana.lk/';  // hot-news/ returns 404 for Sinhala
+    listingUrl = 'https://sinhala.adaderana.lk/';
   } else if (sourceSlug === 'ada-derana-en') {
     listingUrl = 'https://www.adaderana.lk/hot-news/';
   }
 
+  let context: any = null;
   try {
-    const scraped = await scrapeArticle(listingUrl);
-    if (!scraped || !scraped.markdown) return [];
+    context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    });
+    const page = await context.newPage();
+    await page.goto(listingUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(3000);
 
-    const items: RSSItem[] = [];
-    const seen = new Set<string>();
+    const links = await page.evaluate((params: { baseUrl: string; slug: string }) => {
+      const anchors = Array.from(document.querySelectorAll('a[href]'));
+      const articleLinks: Array<{ url: string; title: string }> = [];
+      const seen = new Set<string>();
 
-    // Strategy 1: Extract markdown links [title](url) — works for most sites
-    const linkRe = /\[([^\]]{5,})\]\((https?:\/\/[^)]+)\)/g;
-    let m: RegExpExecArray | null;
+      for (const a of anchors) {
+        let href = (a as HTMLAnchorElement).href;
+        const text = a.textContent?.trim() || '';
 
-    while ((m = linkRe.exec(scraped.markdown)) !== null && items.length < limit) {
-      const title = m[1].trim();
-      let link = m[2].trim();
+        // Must be same domain and have reasonable title
+        if (!href.startsWith(params.baseUrl) && !href.startsWith('/')) continue;
+        if (text.length < 10 || text.length > 300) continue;
+        if (seen.has(href)) continue;
 
-      // Only keep article-looking URLs from the same domain
-      if (!link.includes('adaderana.lk')) continue;
-      if (!/\/news[/.]/.test(link) && !/\/sports[/.]/.test(link)) continue;
-      if (/\.(jpg|jpeg|png|gif|svg|webp|pdf)$/i.test(link)) continue;
-      // Skip generic links like "වැඩි විස්තර" (more details), "Comments"
-      if (/^(වැඩි විස්තර|more|comments|\(\d+\))/i.test(title)) continue;
+        // Skip navigation/category/media links
+        if (/\/(category|tag|page|author|wp-content|feed|login)\//i.test(href)) continue;
+        if (/\.(jpg|jpeg|png|gif|svg|webp|pdf)$/i.test(href)) continue;
 
-      // Normalize: strip URL-encoded slug, keep base /news/ID
-      link = link.replace(/^http:/, 'https:');
-      const baseMatch = link.match(/(https:\/\/[^/]+\/news\/\d+)/);
-      if (baseMatch) link = baseMatch[1];
-
-      if (seen.has(link)) continue;
-      seen.add(link);
-
-      items.push({ title, link, pubDate: null, description: null, imageUrl: null });
-    }
-
-    // Strategy 2: Raw URL extraction fallback (for pages where markdown link titles are missing)
-    if (items.length === 0) {
-      const urlPatterns = [
-        /https?:\/\/sinhala\.adaderana\.lk\/news\/\d+/g,
-        /https?:\/\/(?:www\.)?adaderana\.lk\/news(?:\.php\?nid=|\/)\d+/g,
-      ];
-      for (const pattern of urlPatterns) {
-        let um: RegExpExecArray | null;
-        while ((um = pattern.exec(scraped.markdown)) !== null && items.length < limit) {
-          let link = um[0].replace(/^http:/, 'https:');
-          if (seen.has(link)) continue;
-          seen.add(link);
-          items.push({ title: 'Untitled', link, pubDate: null, description: null, imageUrl: null });
+        // For Ada Derana, only keep news URLs
+        if (params.slug.startsWith('ada-derana')) {
+          if (!/\/news[/.]/.test(href) && !/\/sports[/.]/.test(href)) continue;
+          // Normalize to base /news/ID
+          href = href.replace(/^http:/, 'https:');
+          const baseMatch = href.match(/(https:\/\/[^/]+\/news\/\d+)/);
+          if (baseMatch) href = baseMatch[1];
+        } else {
+          // Generic: must have enough path segments
+          if (href.split('/').filter(Boolean).length < 4) continue;
         }
-      }
-    }
 
-    return items;
+        // Skip generic link text
+        if (/^(වැඩි විස්තර|more|comments|\(\d+\)|read more)/i.test(text)) continue;
+
+        if (seen.has(href)) continue;
+        seen.add(href);
+        articleLinks.push({ url: href, title: text });
+      }
+      return articleLinks;
+    }, { baseUrl: listingUrl.replace(/\/[^/]*$/, ''), slug: sourceSlug });
+
+    await page.close();
+    await context.close();
+    context = null;
+
+    return links.slice(0, limit).map(l => ({
+      title: l.title,
+      link: l.url,
+      pubDate: null,
+      description: null,
+      imageUrl: null,
+    }));
   } catch {
+    if (context) await context.close().catch(() => {});
     return [];
   }
 }
@@ -617,22 +877,41 @@ async function fetchPlaywrightArticles(
 
         if (!result.content || result.content.length < 200) continue;
 
+        // Date extraction waterfall
         let pubDate: string | null = null;
         if (result.dateStr) {
-          try { pubDate = new Date(result.dateStr).toISOString(); } catch {}
+          try {
+            const d = new Date(result.dateStr);
+            if (!isNaN(d.getTime()) && d.getFullYear() >= 2006) pubDate = d.toISOString();
+          } catch {}
+          if (!pubDate) pubDate = extractDateFromText(result.dateStr);
         }
+        // URL pattern fallback
+        if (!pubDate) {
+          const urlMatch = link.url.match(/\/(\d{4})\/(\d{2})\/(\d{2})\//);
+          if (urlMatch) {
+            const d = new Date(`${urlMatch[1]}-${urlMatch[2]}-${urlMatch[3]}T00:00:00+05:30`);
+            if (!isNaN(d.getTime()) && d.getFullYear() >= 2006) pubDate = d.toISOString();
+          }
+        }
+        // Body text fallback
+        if (!pubDate) pubDate = extractDateFromText(result.content.slice(0, 3000));
+
+        const normContent = normalizeText(result.content);
+        const normTitle = normalizeText(result.title || link.title);
+        const normAuthor = result.author ? normalizeText(result.author) : null;
 
         items.push({
-          title: result.title || link.title,
+          title: normTitle,
           link: link.url,
           pubDate,
-          description: result.content.slice(0, 500),
+          description: normContent.slice(0, 500),
           imageUrl: result.imageUrl,
-          _fullContent: result.content,
-          _author: result.author,
+          _fullContent: normContent,
+          _author: normAuthor,
         });
 
-        log(`  ${GREEN}✓${RESET} ${(result.title || link.title).slice(0, 55)}... (${result.content.length} chars)`);
+        log(`  ${GREEN}✓${RESET} ${normTitle.slice(0, 55)}... (${normContent.length} chars${pubDate ? '' : ', NO DATE'})`);
       } catch {
         log(`  ${RED}✗${RESET} Failed: ${link.title.slice(0, 50)}...`);
       }
@@ -670,375 +949,286 @@ async function runIngest(limit: number): Promise<number> {
 
   log(`Found ${sources.length} active sources`);
   let totalInserted = 0;
+  let totalSkippedNoDate = 0;
+  let totalSkippedDuplicate = 0;
 
-  for (const source of sources) {
-    log(`${DIM}Source: ${source.name} (${source.slug})${RESET}`);
-
-    const config = (source.scrape_config || {}) as Record<string, unknown>;
-    const method = config.method as string | undefined;
-
-    let rssItems: RSSItemExtended[] = [];
-    let usedFallback = false;
-    let skipScrape = false; // For API sources that already have full content
-
-    // Route to appropriate ingestion method based on scrape_config
-    if (method === 'newsfirst_api' && config.api_url) {
-      try {
-        rssItems = await fetchNewsfirstAPI(config.api_url as string, limit);
-        skipScrape = true;
-        if (rssItems.length > 0) log(`  ${GREEN}✓${RESET} News 1st API: ${rssItems.length} articles`);
-      } catch (err) {
-        log(`  ${RED}✗${RESET} News 1st API failed: ${err instanceof Error ? err.message : err}`);
-      }
-    } else if (method === 'wp_api' && config.api_url) {
-      try {
-        rssItems = await fetchWordPressAPI(config.api_url as string, limit);
-        skipScrape = true;
-        if (rssItems.length > 0) log(`  ${GREEN}✓${RESET} WP API: ${rssItems.length} articles`);
-      } catch (err) {
-        log(`  ${RED}✗${RESET} WP API failed: ${err instanceof Error ? err.message : err}`);
-      }
-    } else if (method === 'edition_rss' && config.edition_sections) {
-      try {
-        rssItems = await fetchSundayTimesEdition(config.edition_sections as string[], limit);
-        if (rssItems.length > 0) log(`  ${GREEN}✓${RESET} Edition RSS: ${rssItems.length} articles`);
-      } catch (err) {
-        log(`  ${RED}✗${RESET} Edition RSS failed: ${err instanceof Error ? err.message : err}`);
-      }
-    } else if (method === 'playwright') {
-      // Cloudflare-protected sources — use Playwright Docker service
-      try {
-        rssItems = await fetchPlaywrightArticles(source.url, source.slug, limit);
-        skipScrape = true; // Content already extracted by Playwright
-        if (rssItems.length > 0) log(`  ${GREEN}✓${RESET} Playwright: ${rssItems.length} articles scraped`);
-      } catch (err) {
-        log(`  ${RED}✗${RESET} Playwright failed: ${err instanceof Error ? err.message : err}`);
-      }
-    } else {
-      // Standard RSS + fallback approach
-      if (source.rss_url) {
-        try {
-          rssItems = await fetchRSS(source.rss_url);
-        } catch (err) {
-          log(`  ${RED}✗${RESET} RSS fetch failed: ${err instanceof Error ? err.message : err}`);
-        }
-      }
-
-      if (rssItems.length === 0) {
-        log(`  ${YELLOW}–${RESET} RSS empty/failed, trying listing page scrape...`);
-        rssItems = await scrapeListingPage(source.url, source.slug, limit);
-        if (rssItems.length > 0) {
-          log(`  ${GREEN}✓${RESET} Listing page fallback: found ${rssItems.length} article links`);
-          usedFallback = true;
-        } else {
-          log(`  ${YELLOW}–${RESET} No articles found from listing page either`);
-          continue;
-        }
-      }
-    }
-
-    if (rssItems.length === 0) continue;
-
-    // Deduplicate against existing URLs
-    const urls = rssItems.slice(0, limit).map(i => i.link);
-    const { data: existing } = await supabase
-      .from('articles')
-      .select('url')
-      .in('url', urls);
-    const existingUrls = new Set((existing || []).map(a => a.url));
-
-    let inserted = 0;
-    for (const item of rssItems.slice(0, limit) as RSSItemExtended[]) {
-      if (existingUrls.has(item.link)) continue;
-
-      // Skip known non-article URLs (media files, feeds, listing/category pages)
-      if (
-        /\.(jpg|jpeg|png|gif|svg|webp|pdf)$/i.test(item.link) ||
-        /\/feed\/?$/.test(item.link) ||
-        /\/print\/?$/.test(item.link) ||
-        /\/wp-content\/uploads\//.test(item.link) ||
-        /\/index\.php$/.test(item.link) ||
-        /\/hot-news\/?$/.test(item.link) ||
-        /\/news_archive\.php/.test(item.link) ||
-        /\/sports\.php$/.test(item.link) ||
-        /\/sports-news\/?$/.test(item.link) ||
-        /\/entertainment-news\/?$/.test(item.link) ||
-        /\/more-entertainment-news\.php/.test(item.link) ||
-        /\/moretechnews\.php/.test(item.link) ||
-        /\/poll_results\.php/.test(item.link) ||
-        /\/category\//.test(item.link) ||
-        /\/tag\//.test(item.link) ||
-        /\/author\//.test(item.link) ||
-        /\/page\/\d+\/?$/.test(item.link) ||
-        /\?mode=beauti/.test(item.link) ||
-        /\?mode=head/.test(item.link)
-      ) {
-        log(`  ${YELLOW}–${RESET} Skip non-article URL: ${item.link.slice(0, 60)}`);
-        continue;
-      }
-
-      let articleTitle: string;
-      let content: string;
-      let excerpt: string | null;
-      let publishedAt: string | null = null;
-      let author: string | null = null;
-      let imageUrl: string | null = item.imageUrl;
-
-      if (skipScrape && item._fullContent) {
-        // API sources already have full content — no need to scrape
-        articleTitle = item.title;
-        content = item._fullContent;
-        excerpt = content.slice(0, 300);
-        author = item._author || null;
-
-        if (item.pubDate) {
-          try { publishedAt = new Date(item.pubDate).toISOString(); } catch {}
-        }
-      } else {
-        // Standard scrape via Firecrawl
-        const scraped = await scrapeArticle(item.link);
-        if (!scraped || scraped.markdown.length < 200) {
-          log(`  ${RED}✗${RESET} ${item.title.slice(0, 50)}... (scrape failed or too short)`);
-          continue;
-        }
-
-        articleTitle = scraped.title || item.title;
-        content = scraped.markdown;
-        author = scraped.author || null;
-
-        if (scraped.publishedTime) {
-          try { publishedAt = new Date(scraped.publishedTime).toISOString(); } catch {}
-        }
-        if (!publishedAt && item.pubDate) {
-          try { publishedAt = new Date(item.pubDate).toISOString(); } catch {}
-        }
-
-        const contentExcerpt = extractExcerpt(scraped.markdown);
-        const rssExcerpt = item.description?.replace(/<[^>]*>/g, '').replace(/MORE\.\.$/, '').trim().slice(0, 300) || null;
-        excerpt = contentExcerpt || rssExcerpt;
-      }
-
-      if (content.length < 100) {
-        log(`  ${RED}✗${RESET} ${articleTitle.slice(0, 50)}... (content too short: ${content.length} chars)`);
-        continue;
-      }
-
-      const { error: insertErr } = await supabase.from('articles').insert({
-        source_id: source.id,
-        url: item.link,
-        title: articleTitle,
-        content,
-        excerpt,
-        image_url: imageUrl,
-        published_at: publishedAt,
-        author,
-        language: source.language,
-        original_language: source.language,
-        is_processed: false,
-      });
-
-      if (insertErr) {
-        log(`  ${RED}✗${RESET} ${articleTitle.slice(0, 50)}... (${insertErr.message})`);
-      } else {
-        const methodLabel = skipScrape ? 'API' : usedFallback ? 'listing' : 'RSS';
-        log(`  ${GREEN}✓${RESET} ${articleTitle.slice(0, 50)}... (${content.length} chars, ${methodLabel}${publishedAt ? '' : ', NO DATE'}${author ? ', ' + author : ''})`);
-        inserted++;
-      }
-
-      // Rate limit: API sources are faster, scrape sources need more delay
-      await new Promise(r => setTimeout(r, skipScrape ? 500 : 2000));
-    }
-
-    if (inserted > 0) {
-      log(`  ${GREEN}▸${RESET} ${source.name}: ${inserted} new articles`);
-    }
-    totalInserted += inserted;
+  // Connect browser once for the entire ingest run
+  let browser: Awaited<ReturnType<typeof chromium.connect>> | null = null;
+  try {
+    browser = await chromium.connect(PLAYWRIGHT_WS, { timeout: 15000 });
+    log(`${GREEN}✓${RESET} Playwright connected`);
+  } catch (err) {
+    log(`${RED}✗${RESET} Playwright connection failed: ${err instanceof Error ? err.message : err}`);
+    log(`${YELLOW}–${RESET} Continuing without article page scraping (API sources only)`);
   }
 
-  log(`${GREEN}▸${RESET} Ingest complete: ${totalInserted} articles inserted`);
+  try {
+    for (const source of sources) {
+      log(`${DIM}Source: ${source.name} (${source.slug})${RESET}`);
+
+      const config = (source.scrape_config || {}) as ScrapeConfig;
+      const method = config.method;
+
+      let rssItems: RSSItemExtended[] = [];
+      let skipScrape = false; // For API sources that already have full content
+
+      // Route to appropriate ingestion method based on scrape_config
+      if (method === 'newsfirst_api' && config.api_url) {
+        try {
+          rssItems = await fetchNewsfirstAPI(config.api_url, limit);
+          skipScrape = true;
+          if (rssItems.length > 0) log(`  ${GREEN}✓${RESET} News 1st API: ${rssItems.length} articles`);
+        } catch (err) {
+          log(`  ${RED}✗${RESET} News 1st API failed: ${err instanceof Error ? err.message : err}`);
+        }
+      } else if (method === 'wp_api' && config.api_url) {
+        try {
+          rssItems = await fetchWordPressAPI(config.api_url, limit);
+          skipScrape = true;
+          if (rssItems.length > 0) log(`  ${GREEN}✓${RESET} WP API: ${rssItems.length} articles`);
+        } catch (err) {
+          log(`  ${RED}✗${RESET} WP API failed: ${err instanceof Error ? err.message : err}`);
+        }
+      } else if (method === 'edition_rss' && config.edition_sections) {
+        try {
+          rssItems = await fetchSundayTimesEdition(config.edition_sections, limit);
+          if (rssItems.length > 0) log(`  ${GREEN}✓${RESET} Edition RSS: ${rssItems.length} articles`);
+        } catch (err) {
+          log(`  ${RED}✗${RESET} Edition RSS failed: ${err instanceof Error ? err.message : err}`);
+        }
+      } else if (method === 'playwright') {
+        // Cloudflare-protected sources — scrape homepage for links via Playwright
+        try {
+          rssItems = await fetchPlaywrightArticles(source.url, source.slug, limit);
+          skipScrape = true; // fetchPlaywrightArticles already scrapes each article page
+          if (rssItems.length > 0) log(`  ${GREEN}✓${RESET} Playwright homepage: ${rssItems.length} articles`);
+        } catch (err) {
+          log(`  ${RED}✗${RESET} Playwright failed: ${err instanceof Error ? err.message : err}`);
+        }
+      } else {
+        // Standard RSS + listing page fallback
+        if (source.rss_url) {
+          try {
+            rssItems = await fetchRSS(source.rss_url);
+          } catch (err) {
+            log(`  ${RED}✗${RESET} RSS fetch failed: ${err instanceof Error ? err.message : err}`);
+          }
+        }
+
+        if (rssItems.length === 0) {
+          log(`  ${YELLOW}–${RESET} RSS empty/failed, trying listing page scrape...`);
+          rssItems = await scrapeListingPage(browser, source.url, source.slug, limit);
+          if (rssItems.length > 0) {
+            log(`  ${GREEN}✓${RESET} Listing page fallback: found ${rssItems.length} article links`);
+          } else {
+            log(`  ${YELLOW}–${RESET} No articles found from listing page either`);
+            continue;
+          }
+        }
+      }
+
+      if (rssItems.length === 0) continue;
+
+      // --- Deduplicate against existing URLs AND recent titles ---
+      const urls = rssItems.slice(0, limit).map(i => i.link);
+
+      // Query 1: Check which URLs already exist for this source
+      const { data: existingByUrl } = await supabase
+        .from('articles')
+        .select('url')
+        .eq('source_id', source.id)
+        .in('url', urls);
+
+      // Query 2: Get recent titles for title-based dedup (last 7 days)
+      const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+      const { data: recentArticles } = await supabase
+        .from('articles')
+        .select('title')
+        .eq('source_id', source.id)
+        .gte('created_at', sevenDaysAgo);
+
+      const existingUrls = new Set((existingByUrl || []).map(a => a.url));
+      const existingTitles = new Set(
+        (recentArticles || []).map(a => normalizeTitle(a.title || ''))
+          .filter(t => t.length > 10) // Only meaningful titles
+      );
+
+      // Create browser context for this source (shared across articles)
+      let context: any = null;
+      if (browser && !skipScrape) {
+        try {
+          context = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          });
+        } catch (err) {
+          log(`  ${RED}✗${RESET} Browser context failed: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+
+      let inserted = 0;
+      let skippedNoDate = 0;
+      let skippedDuplicate = 0;
+
+      try {
+        for (const item of rssItems.slice(0, limit) as RSSItemExtended[]) {
+          // URL deduplication
+          if (existingUrls.has(item.link)) continue;
+
+          // Title deduplication (catches same article at different URLs)
+          const normTitle = normalizeTitle(item.title);
+          if (normTitle.length > 10 && existingTitles.has(normTitle)) {
+            skippedDuplicate++;
+            continue;
+          }
+
+          // Skip known non-article URLs
+          if (
+            /\.(jpg|jpeg|png|gif|svg|webp|pdf)$/i.test(item.link) ||
+            /\/feed\/?$/.test(item.link) ||
+            /\/print\/?$/.test(item.link) ||
+            /\/wp-content\/uploads\//.test(item.link) ||
+            /\/(category|tag|author|page)\//.test(item.link) ||
+            /\/(hot-news|news_archive|sports|entertainment-news)\/?$/i.test(item.link) ||
+            /\?mode=(beauti|head)/.test(item.link)
+          ) continue;
+
+          let articleTitle: string;
+          let content: string;
+          let excerpt: string | null;
+          let publishedAt: string | null = null;
+          let author: string | null = null;
+          let imageUrl: string | null = item.imageUrl;
+
+          if (skipScrape && item._fullContent) {
+            // API sources already have full content — no page scraping needed
+            articleTitle = normalizeText(item.title);
+            content = normalizeText(item._fullContent);
+            excerpt = content.slice(0, 300);
+            author = item._author ? normalizeText(item._author) : null;
+
+            if (item.pubDate) {
+              try { publishedAt = new Date(item.pubDate).toISOString(); } catch {}
+            }
+          } else if (context) {
+            // Scrape article page with Playwright
+            const scraped = await scrapeArticlePage(context, item.link, config, item.pubDate);
+            if (!scraped || scraped.content.length < 200) {
+              log(`  ${RED}✗${RESET} ${item.title.slice(0, 50)}... (scrape failed or too short)`);
+              continue;
+            }
+
+            articleTitle = scraped.title || normalizeText(item.title);
+            content = scraped.content;
+            author = scraped.author;
+            publishedAt = scraped.publishedTime;
+            imageUrl = scraped.imageUrl || imageUrl;
+
+            excerpt = extractExcerpt(content) || content.slice(0, 300);
+          } else {
+            // No browser available — can only use RSS data
+            articleTitle = normalizeText(item.title);
+            content = normalizeText(item.description?.replace(/<[^>]*>/g, '') || '');
+            excerpt = content.slice(0, 300);
+
+            if (item.pubDate) {
+              try { publishedAt = new Date(item.pubDate).toISOString(); } catch {}
+            }
+          }
+
+          // --- MANDATORY DATE CHECK ---
+          if (!publishedAt) {
+            skippedNoDate++;
+            log(`  ${YELLOW}–${RESET} ${articleTitle.slice(0, 50)}... (NO DATE — skipped)`);
+            continue;
+          }
+
+          if (content.length < 100) {
+            log(`  ${RED}✗${RESET} ${articleTitle.slice(0, 50)}... (content too short: ${content.length} chars)`);
+            continue;
+          }
+
+          const { error: insertErr } = await supabase.from('articles').insert({
+            source_id: source.id,
+            url: item.link,
+            title: articleTitle,
+            content,
+            excerpt,
+            image_url: imageUrl,
+            published_at: publishedAt,
+            author,
+            language: source.language,
+            original_language: source.language,
+            is_processed: false,
+          });
+
+          if (insertErr) {
+            if (insertErr.message.includes('duplicate') || insertErr.message.includes('unique')) {
+              skippedDuplicate++;
+            } else {
+              log(`  ${RED}✗${RESET} ${articleTitle.slice(0, 50)}... (${insertErr.message})`);
+            }
+          } else {
+            const methodLabel = skipScrape ? 'API' : 'PW';
+            log(`  ${GREEN}✓${RESET} ${articleTitle.slice(0, 50)}... (${content.length} chars, ${methodLabel}${author ? ', ' + author : ''})`);
+            inserted++;
+            // Track this title to prevent intra-batch duplicates
+            existingTitles.add(normTitle);
+            existingUrls.add(item.link);
+          }
+
+          // Rate limit
+          const delayMs = config.rateLimitMs || (skipScrape ? 500 : 2000);
+          await new Promise(r => setTimeout(r, delayMs));
+        }
+      } finally {
+        // Ensure browser context is always cleaned up
+        if (context) await context.close().catch(() => {});
+      }
+
+      if (inserted > 0) {
+        log(`  ${GREEN}▸${RESET} ${source.name}: ${inserted} new articles`);
+      }
+      if (skippedNoDate > 0) {
+        log(`  ${YELLOW}▸${RESET} ${source.name}: ${skippedNoDate} skipped (no date)`);
+      }
+      if (skippedDuplicate > 0) {
+        log(`  ${DIM}▸ ${source.name}: ${skippedDuplicate} skipped (duplicate)${RESET}`);
+      }
+      totalInserted += inserted;
+      totalSkippedNoDate += skippedNoDate;
+      totalSkippedDuplicate += skippedDuplicate;
+    }
+  } finally {
+    // Ensure browser cleanup even on errors
+    if (browser) await browser.close().catch(() => {});
+  }
+
+  log(`${GREEN}▸${RESET} Ingest complete: ${totalInserted} inserted, ${totalSkippedNoDate} skipped (no date), ${totalSkippedDuplicate} skipped (duplicate)`);
   return totalInserted;
 }
 
 // ===========================================================================
-// STEP 2: ENRICH
+// STEP 2: ENRICH (uses lib/enrichment/ modular service)
 // ===========================================================================
 
-interface AnalysisResult {
-  summary: string;
-  topics: string[];
-  bias_score: number;
-  sentiment: 'positive' | 'negative' | 'neutral' | 'mixed';
-  bias_indicators: string[];
-  is_original_reporting: boolean;
-  crime_type: string | null;
-  locations: string[];
-  law_enforcement: string[];
-  police_station: string | null;
-  political_party: string | null;
-  election_info: {
-    type: string;
-    constituency: string;
-    result: 'winner' | 'loser' | null;
-    votes: string | null;
-  } | null;
-}
+import { EnrichmentService } from '../lib/enrichment';
+import type { LLMClientConfig, EmbeddingConfig as EnrichEmbeddingConfig } from '../lib/enrichment';
 
-function buildAnalysisPrompt(title: string, content: string): string {
-  return `Analyze this Sri Lankan news article for media bias and content.
-
-Title: ${title}
-
-Content:
-${content.slice(0, 4000)}
-
-Respond with ONLY a JSON object (no markdown, no code fences):
-{
-  "summary": "2-sentence summary of the article",
-  "topics": ["topic1", "topic2", "topic3"],
-  "bias_score": 0.0,
-  "sentiment": "neutral",
-  "bias_indicators": ["indicator1"],
-  "is_original_reporting": true,
-  "crime_type": null,
-  "locations": [],
-  "law_enforcement": [],
-  "police_station": null,
-  "political_party": null,
-  "election_info": null
-}
-
-Rules:
-- bias_score: -1.0 (far left/opposition) to 1.0 (far right/government). 0.0 = neutral.
-- sentiment: one of "positive", "negative", "neutral", "mixed"
-- topics: 2-5 relevant topic keywords from: politics, economy, business, cricket, sports, tourism, education, health, crime, environment, technology, international, entertainment
-- bias_indicators: specific phrases or framing choices that indicate bias (empty array if neutral)
-- is_original_reporting: true if this appears to be original journalism, false if aggregated/wire service
-- crime_type: if crime-related, one of: "drugs", "shooting", "murder", "robbery", "assault", "kidnapping", "fraud", "corruption", "smuggling", "sexual-assault", "arson", "human-trafficking". null if not crime.
-- locations: array of specific Sri Lankan place names mentioned (cities, towns, districts). Example: ["Colombo", "Negombo", "Gampaha"]
-- law_enforcement: array of law enforcement/military organizations involved. Example: ["Police", "Sri Lanka Army", "CID", "STF"]. Empty if none.
-- police_station: specific police station or division mentioned (e.g. "Colombo Fort Police", "Kelaniya Police", "Mount Lavinia Police"). null if not mentioned.
-- political_party: if a political party is mentioned, its name (e.g. "SLPP", "SJB", "UNP", "JVP/NPP", "SLFP"). null if none.
-- election_info: if election-related, an object with: type ("presidential"/"parliamentary"/"provincial"/"local"), constituency (area/district), result ("winner"/"loser"/null), votes (vote count or percentage string, e.g. "52.25%" or "6,853,690"). null if not election-related.`;
-}
-
-function parseAnalysisResponse(responseText: string): AnalysisResult | null {
-  if (!responseText) return null;
-
-  // Strip thinking tags from qwen3 if present
-  let cleaned = responseText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-
-  // Strip markdown code fences
-  cleaned = cleaned.replace(/^```json?\n?/i, '').replace(/\n?```$/i, '').trim();
-
-  try {
-    return JSON.parse(cleaned) as AnalysisResult;
-  } catch {
-    return null;
-  }
-}
-
-async function analyzeWithOpenRouter(title: string, content: string): Promise<AnalysisResult | null> {
-  const prompt = buildAnalysisPrompt(title, content);
-
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120000);
-
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${openrouterKey}`,
-      },
-      body: JSON.stringify({
-        model: openrouterModel,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.3,
-        max_tokens: 2000,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-
-    const data = await res.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-      error?: { message?: string };
-    };
-
-    if (data.error) return null;
-    return parseAnalysisResponse(data.choices?.[0]?.message?.content?.trim() || '');
-  } catch {
-    return null;
-  }
-}
-
-async function analyzeWithOllama(title: string, content: string): Promise<AnalysisResult | null> {
-  const prompt = `/no_think\n${buildAnalysisPrompt(title, content)}`;
-
-  try {
-    const controller = new AbortController();
-    // Ollama is slower — give it 120s
-    const timeout = setTimeout(() => controller.abort(), 120000);
-
-    const res = await fetch(`${ollamaUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: ollamaLlmModel,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.3,
-        max_tokens: 4000,
-        response_format: { type: 'json_object' },
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-
-    const data = await res.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-      error?: { message?: string };
-    };
-
-    if (data.error) return null;
-    return parseAnalysisResponse(data.choices?.[0]?.message?.content?.trim() || '');
-  } catch {
-    return null;
-  }
-}
-
-async function analyzeArticle(title: string, content: string): Promise<AnalysisResult | null> {
-  if (llmProvider === 'ollama') {
-    return analyzeWithOllama(title, content);
-  }
-  return analyzeWithOpenRouter(title, content);
-}
-
-async function generateEmbedding(text: string): Promise<number[] | null> {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120000);
-
-    const res = await fetch(`${ollamaUrl}/embeddings`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: embeddingModel,
-        input: text.slice(0, 8000),
-        dimensions: embeddingDims,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-
-    const data = await res.json() as {
-      data?: Array<{ embedding?: number[] }>;
-    };
-
-    const embedding = data.data?.[0]?.embedding;
-    return embedding && embedding.length === embeddingDims ? embedding : null;
-  } catch {
-    return null;
-  }
+function buildEnrichmentConfigs(): { llm: LLMClientConfig; embedding: EnrichEmbeddingConfig } {
+  return {
+    llm: {
+      provider: llmProvider,
+      openrouterKey,
+      openrouterModel,
+      ollamaUrl,
+      ollamaModel: ollamaLlmModel,
+    },
+    embedding: {
+      ollamaUrl,
+      model: embeddingModel,
+      dimensions: embeddingDims,
+    },
+  };
 }
 
 async function runEnrich(limit: number): Promise<number> {
@@ -1047,7 +1237,7 @@ async function runEnrich(limit: number): Promise<number> {
 
   const { data: articles, error } = await supabase
     .from('articles')
-    .select('id, title, content, source_id, published_at, url')
+    .select('id, title, content, source_id, published_at, url, language')
     .is('ai_enriched_at', null)
     .not('content', 'is', null)
     .order('created_at', { ascending: false })
@@ -1061,6 +1251,9 @@ async function runEnrich(limit: number): Promise<number> {
   log(`Found ${articles.length} unenriched articles`);
   let enriched = 0;
   let qualitySkipped = 0;
+
+  const configs = buildEnrichmentConfigs();
+  const enrichmentService = new EnrichmentService(supabase, configs.llm, configs.embedding);
 
   for (const article of articles) {
     // Quality gate: skip articles with too-short content (likely non-article pages)
@@ -1085,187 +1278,77 @@ async function runEnrich(limit: number): Promise<number> {
 
     log(`${DIM}Processing: ${article.title.slice(0, 55)}...${RESET}`);
 
-    // LLM analysis
-    const analysis = await analyzeArticle(article.title, article.content!);
-    if (!analysis) {
-      log(`  ${RED}✗${RESET} LLM analysis failed`);
+    // Unified enrichment: analysis + entities + translation + embedding
+    const result = await enrichmentService.enrichArticle({
+      id: article.id,
+      title: article.title,
+      content: article.content!,
+      source_id: article.source_id,
+      url: article.url,
+      published_at: article.published_at,
+      language: article.language,
+    });
+
+    if (!result) {
+      log(`  ${RED}✗${RESET} Enrichment failed`);
       continue;
     }
 
-    log(`  ${GREEN}✓${RESET} Bias: ${analysis.bias_score}, Sentiment: ${analysis.sentiment}`);
-
-    await new Promise(r => setTimeout(r, 1000));
-
-    // Embedding
-    const embeddingInput = `${article.title}\n\n${article.content!.slice(0, 6000)}`;
-    const embedding = await generateEmbedding(embeddingInput);
-
-    if (!embedding) {
+    if (!result.embedding) {
       log(`  ${RED}✗${RESET} Embedding failed`);
       continue;
     }
 
-    // Update DB
+    log(`  ${GREEN}✓${RESET} Lang: ${result.detected_language}, Type: ${result.article_type}, Bias: ${result.bias_score}, Tags: ${result.tags.length}`);
+
+    // Update DB with all enriched fields
+    const updateFields: Record<string, unknown> = {
+      summary: result.summary,
+      topics: result.election_info
+        ? [...new Set([...result.topics, 'election'])]
+        : result.topics,
+      ai_bias_score: result.bias_score,
+      ai_sentiment: result.sentiment,
+      ai_enriched_at: new Date().toISOString(),
+      is_processed: true,
+      embedding: `[${result.embedding.join(',')}]`,
+      language: result.detected_language,
+      // New fields
+      key_people: result.key_people,
+      key_quotes: result.key_quotes,
+      article_type: result.article_type,
+      reading_time: result.reading_time,
+      casualties: result.casualties,
+      monetary_amounts: result.monetary_amounts,
+    };
+
+    // Translation fields (only set if generated)
+    if (result.title_si) updateFields.title_si = result.title_si;
+    if (result.title_en) updateFields.title_en = result.title_en;
+    if (result.summary_si) updateFields.summary_si = result.summary_si;
+    if (result.summary_en) updateFields.summary_en = result.summary_en;
+
     const { error: updateErr } = await supabase
       .from('articles')
-      .update({
-        summary: analysis.summary,
-        topics: analysis.topics,
-        ai_bias_score: analysis.bias_score,
-        ai_sentiment: analysis.sentiment,
-        ai_enriched_at: new Date().toISOString(),
-        is_processed: true,
-        embedding: `[${embedding.join(',')}]`,
-      })
+      .update(updateFields)
       .eq('id', article.id);
 
     if (updateErr) {
       log(`  ${RED}✗${RESET} DB update failed: ${updateErr.message}`);
     } else {
-      log(`  ${GREEN}✓${RESET} Enriched & saved`);
       enriched++;
+      log(`  ${GREEN}✓${RESET} Enriched & saved (${result.tags.length} tags, ${result.key_people.length} people)`);
 
-      // Tag with crime type if detected
-      if (analysis.crime_type) {
-        const crimeSlug = analysis.crime_type;
-        const { data: crimeTag } = await supabase
-          .from('tags')
-          .upsert(
-            { name: crimeSlug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), slug: crimeSlug, type: 'topic', is_active: true, created_by: 'ai' },
-            { onConflict: 'slug' }
-          )
-          .select('id')
-          .single();
-        if (crimeTag) {
-          await supabase.from('article_tags').upsert(
-            { article_id: article.id, tag_id: crimeTag.id, confidence: 0.85, source: 'ai' },
-            { onConflict: 'article_id,tag_id' }
-          );
-          log(`    ${DIM}Crime: ${crimeSlug}${RESET}`);
-        }
-      }
+      // Log details
+      if (result.crime_type) log(`    ${DIM}Crime: ${result.crime_type}${RESET}`);
+      if (result.locations.length > 0) log(`    ${DIM}Locations: ${result.locations.join(', ')}${RESET}`);
+      if (result.key_people.length > 0) log(`    ${DIM}People: ${result.key_people.join(', ')}${RESET}`);
+      if (result.casualties) log(`    ${DIM}Casualties: ${result.casualties.deaths} dead, ${result.casualties.injuries} injured${RESET}`);
+      if (result.monetary_amounts.length > 0) log(`    ${DIM}Amounts: ${result.monetary_amounts.map(m => `${m.currency} ${m.amount}`).join(', ')}${RESET}`);
+      if (result.title_si || result.title_en) log(`    ${DIM}Translated to ${result.title_si ? 'SI' : 'EN'}${RESET}`);
 
-      // Tag with locations if detected
-      if (analysis.locations && analysis.locations.length > 0) {
-        for (const locName of analysis.locations.slice(0, 5)) {
-          const locSlug = slugify(locName);
-          if (!locSlug) continue;
-
-          // Try to find matching Sri Lanka location for coordinates
-          const { data: slLoc } = await supabase
-            .from('sri_lanka_locations')
-            .select('*')
-            .eq('slug', locSlug)
-            .maybeSingle();
-
-          const { data: locTag } = await supabase
-            .from('tags')
-            .upsert(
-              {
-                name: locName,
-                slug: locSlug,
-                type: 'location',
-                is_active: true,
-                created_by: 'ai',
-                ...(slLoc ? { latitude: slLoc.latitude, longitude: slLoc.longitude, district: slLoc.district, province: slLoc.province, name_si: slLoc.name_si } : {}),
-              },
-              { onConflict: 'slug' }
-            )
-            .select('id')
-            .single();
-
-          if (locTag) {
-            await supabase.from('article_tags').upsert(
-              { article_id: article.id, tag_id: locTag.id, confidence: 0.8, source: 'ai' },
-              { onConflict: 'article_id,tag_id' }
-            );
-          }
-        }
-        log(`    ${DIM}Locations: ${analysis.locations.join(', ')}${RESET}`);
-      }
-
-      // Tag with law enforcement organizations
-      if (analysis.law_enforcement && analysis.law_enforcement.length > 0) {
-        for (const orgName of analysis.law_enforcement.slice(0, 3)) {
-          const orgSlug = slugify(orgName);
-          if (!orgSlug) continue;
-
-          const { data: orgTag } = await supabase
-            .from('tags')
-            .upsert(
-              { name: orgName, slug: orgSlug, type: 'organization', is_active: true, created_by: 'ai' },
-              { onConflict: 'slug' }
-            )
-            .select('id')
-            .single();
-
-          if (orgTag) {
-            await supabase.from('article_tags').upsert(
-              { article_id: article.id, tag_id: orgTag.id, confidence: 0.85, source: 'ai' },
-              { onConflict: 'article_id,tag_id' }
-            );
-          }
-        }
-        log(`    ${DIM}Law enforcement: ${analysis.law_enforcement.join(', ')}${RESET}`);
-      }
-
-      // Tag with police station if mentioned
-      if (analysis.police_station) {
-        const stationSlug = slugify(analysis.police_station);
-        if (stationSlug) {
-          const { data: stationTag } = await supabase
-            .from('tags')
-            .upsert(
-              { name: analysis.police_station, slug: stationSlug, type: 'organization', is_active: true, created_by: 'ai' },
-              { onConflict: 'slug' }
-            )
-            .select('id')
-            .single();
-
-          if (stationTag) {
-            await supabase.from('article_tags').upsert(
-              { article_id: article.id, tag_id: stationTag.id, confidence: 0.9, source: 'ai' },
-              { onConflict: 'article_id,tag_id' }
-            );
-          }
-          log(`    ${DIM}Police station: ${analysis.police_station}${RESET}`);
-        }
-      }
-
-      // Tag with political party if mentioned
-      if (analysis.political_party) {
-        const partySlug = slugify(analysis.political_party);
-        if (partySlug) {
-          const { data: partyTag } = await supabase
-            .from('tags')
-            .upsert(
-              { name: analysis.political_party, slug: partySlug, type: 'organization', is_active: true, created_by: 'ai' },
-              { onConflict: 'slug' }
-            )
-            .select('id')
-            .single();
-
-          if (partyTag) {
-            await supabase.from('article_tags').upsert(
-              { article_id: article.id, tag_id: partyTag.id, confidence: 0.85, source: 'ai' },
-              { onConflict: 'article_id,tag_id' }
-            );
-          }
-          log(`    ${DIM}Party: ${analysis.political_party}${RESET}`);
-        }
-      }
-
-      // Store election info in article metadata if present
-      if (analysis.election_info) {
-        await supabase
-          .from('articles')
-          .update({
-            // Store election data in the existing metadata-capable topics array + a custom approach:
-            // We append election context to topics for searchability
-            topics: [...new Set([...(analysis.topics || []), 'election'])],
-          })
-          .eq('id', article.id);
-        log(`    ${DIM}Election: ${analysis.election_info.type} in ${analysis.election_info.constituency || 'N/A'}${analysis.election_info.result ? ' (' + analysis.election_info.result + ')' : ''}${RESET}`);
+      if (result.election_info) {
+        log(`    ${DIM}Election: ${result.election_info.type} in ${result.election_info.constituency || 'N/A'}${result.election_info.result ? ' (' + result.election_info.result + ')' : ''}${RESET}`);
       }
     }
 
@@ -1430,112 +1513,8 @@ async function runCluster(threshold: number): Promise<number> {
 // STEP 4: GRAPH (Graphiti knowledge graph)
 // ===========================================================================
 
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, '')
-    .replace(/[\s_]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 100);
-}
-
-async function extractEntitiesFromContent(
-  articleId: string,
-  title: string,
-  content: string,
-): Promise<void> {
-  try {
-    // Use article content directly — no dependency on Graphiti search
-    const textForExtraction = `Title: ${title}\n\n${content}`.slice(0, 4000);
-
-    const entityPrompt = `/no_think\nExtract named entities from this news article. Return a JSON array.
-
-Article:
-${textForExtraction}
-
-Example output:
-[{"name": "Colombo", "type": "location"}, {"name": "Ranil Wickremesinghe", "type": "person"}, {"name": "Central Bank of Sri Lanka", "type": "organization"}, {"name": "inflation", "type": "topic"}]
-
-Rules:
-- "name" is the actual proper noun from the article (e.g. "Colombo", NOT "location")
-- "type" is one of: person, organization, location, topic
-- Maximum 10 entities
-- Respond with ONLY a JSON array, no other text`;
-
-    const llmController = new AbortController();
-    const llmTimeout = setTimeout(() => llmController.abort(), 120000);
-
-    const llmRes = await fetch(`${ollamaUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: ollamaLlmModel,
-        messages: [{ role: 'user', content: entityPrompt }],
-        temperature: 0.1,
-        max_tokens: 2000,
-      }),
-      signal: llmController.signal,
-    });
-    clearTimeout(llmTimeout);
-
-    if (!llmRes.ok) return;
-
-    const llmData = await llmRes.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-
-    let responseText = llmData.choices?.[0]?.message?.content?.trim() || '';
-    responseText = responseText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-    responseText = responseText.replace(/^```json?\n?/i, '').replace(/\n?```$/i, '').trim();
-
-    let entities: Array<{ name: string; type: string }>;
-    try {
-      const parsed = JSON.parse(responseText);
-      entities = Array.isArray(parsed) ? parsed : (parsed.entities || []);
-    } catch {
-      return;
-    }
-
-    const validTypes = new Set(['person', 'organization', 'location', 'topic']);
-    let saved = 0;
-
-    for (const entity of entities) {
-      if (!entity.name || !validTypes.has(entity.type)) continue;
-      // Skip if the LLM output a type name as the entity name (hallucination guard)
-      if (validTypes.has(entity.name.toLowerCase())) continue;
-
-      const slug = slugify(entity.name);
-      if (!slug) continue;
-
-      // Upsert tag
-      const { data: tag, error: tagErr } = await supabase
-        .from('tags')
-        .upsert(
-          { name: entity.name, slug, type: entity.type, is_active: true },
-          { onConflict: 'slug' }
-        )
-        .select('id')
-        .single();
-
-      if (tagErr || !tag) continue;
-
-      // Link to article
-      await supabase
-        .from('article_tags')
-        .upsert(
-          { article_id: articleId, tag_id: tag.id, confidence: 0.8, source: 'ai' },
-          { onConflict: 'article_id,tag_id' }
-        );
-      saved++;
-    }
-
-    if (saved > 0) {
-      log(`    ${GREEN}✓${RESET} Extracted ${saved} entities`);
-    }
-  } catch {
-    // Entity extraction is best-effort — don't fail the sync
-  }
-}
+// Note: slugify() and extractEntitiesFromContent() have been moved to lib/enrichment/
+// Entity extraction now happens in the unified enrich stage, not the graph stage.
 
 async function runGraph(limit: number): Promise<number> {
   log(`${BOLD}GRAPH${RESET} — syncing enriched articles to Graphiti knowledge graph`);
@@ -1607,8 +1586,7 @@ async function runGraph(limit: number): Promise<number> {
 
       log(`  ${GREEN}✓${RESET} Synced to knowledge graph`);
 
-      // Extract entities from article content via LLM and create local tags
-      await extractEntitiesFromContent(article.id, article.title, article.content || '');
+      // Entity extraction now happens in the unified enrich stage (lib/enrichment/)
 
       // Mark as synced
       const { error: updateErr } = await supabase

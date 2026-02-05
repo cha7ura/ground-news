@@ -6,7 +6,7 @@ import { BiasIndicator } from '@/components/bias-indicator';
 import { ArticleCardHorizontal } from '@/components/article-card';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { formatRelativeTime, cn, getBiasBgColor } from '@/lib/utils';
+import { formatRelativeTime, cn, getBiasBgColor, getArticleTypeBadge } from '@/lib/utils';
 import { getBiasLabel, getBiasCategory, getLocalizedTitle, getLocalizedSummary, type Language } from '@/lib/types';
 import { getDictionary } from '@/lib/i18n/get-dictionary';
 
@@ -111,7 +111,7 @@ export default async function StoryPage({ params }: StoryPageProps) {
             {articlesByBias.left.length > 0 ? (
               <div className="space-y-3">
                 {articlesByBias.left.map((article) => (
-                  <ArticleCardHorizontal key={article.id} article={article} />
+                  <ArticleCardHorizontal key={article.id} article={article} locale={locale} />
                 ))}
               </div>
             ) : (
@@ -134,7 +134,7 @@ export default async function StoryPage({ params }: StoryPageProps) {
             {articlesByBias.center.length > 0 ? (
               <div className="space-y-3">
                 {articlesByBias.center.map((article) => (
-                  <ArticleCardHorizontal key={article.id} article={article} />
+                  <ArticleCardHorizontal key={article.id} article={article} locale={locale} />
                 ))}
               </div>
             ) : (
@@ -157,7 +157,7 @@ export default async function StoryPage({ params }: StoryPageProps) {
             {articlesByBias.right.length > 0 ? (
               <div className="space-y-3">
                 {articlesByBias.right.map((article) => (
-                  <ArticleCardHorizontal key={article.id} article={article} />
+                  <ArticleCardHorizontal key={article.id} article={article} locale={locale} />
                 ))}
               </div>
             ) : (
@@ -177,6 +177,7 @@ export default async function StoryPage({ params }: StoryPageProps) {
         <div className="space-y-4">
           {articles.map((article) => {
             const biasScore = article.ai_bias_score ?? article.source?.bias_score ?? 0;
+            const typeBadge = getArticleTypeBadge(article.article_type, locale);
             return (
               <a
                 key={article.id}
@@ -192,6 +193,11 @@ export default async function StoryPage({ params }: StoryPageProps) {
                         <span className="text-sm font-medium text-gray-600 dark:text-gray-400">
                           {article.source?.name || 'Unknown Source'}
                         </span>
+                        {typeBadge && (
+                          <span className={cn('text-xs px-1.5 py-0.5 rounded font-medium', typeBadge.className)}>
+                            {typeBadge.label}
+                          </span>
+                        )}
                         <span className={cn(
                           'text-xs px-2 py-0.5 rounded-full text-white',
                           getBiasBgColor(biasScore)
@@ -208,8 +214,14 @@ export default async function StoryPage({ params }: StoryPageProps) {
                         </p>
                       )}
                       <div className="flex items-center gap-2 mt-2 text-xs text-gray-500 dark:text-gray-400">
-                     {article.published_at && (
+                        {article.published_at && (
                           <span>{formatRelativeTime(article.published_at)}</span>
+                        )}
+                        {article.reading_time && (
+                          <>
+                            <span>•</span>
+                            <span>{article.reading_time} min read</span>
+                          </>
                         )}
                         {article.author && (
                           <>

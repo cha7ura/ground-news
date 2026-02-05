@@ -40,3 +40,30 @@ export function getBiasBgColor(score: number): string {
   if (score > 0.3) return 'bg-bias-right';
   return 'bg-bias-center';
 }
+
+const ARTICLE_TYPE_LABELS: Record<string, Record<string, string>> = {
+  opinion: { en: 'Opinion', si: 'අදහස්' },
+  analysis: { en: 'Analysis', si: 'විශ්ලේෂණය' },
+  interview: { en: 'Interview', si: 'සම්මුඛ සාකච්ඡාව' },
+};
+
+const ARTICLE_TYPE_CLASSES: Record<string, string> = {
+  opinion: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+  analysis: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400',
+  interview: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
+};
+
+/**
+ * Get badge styling for non-default article types.
+ * Returns null for 'news' (default type — no badge needed).
+ */
+export function getArticleTypeBadge(type: string | null | undefined, locale: string = 'en'): {
+  label: string;
+  className: string;
+} | null {
+  if (!type || type === 'news') return null;
+  const labels = ARTICLE_TYPE_LABELS[type];
+  const className = ARTICLE_TYPE_CLASSES[type];
+  if (!labels || !className) return null;
+  return { label: labels[locale] || labels.en, className };
+}

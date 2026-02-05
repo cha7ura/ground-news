@@ -1,6 +1,9 @@
 import { MeiliSearch } from 'meilisearch';
 import { createLogger } from '@/lib/logger';
 
+// Re-export bias helpers from canonical source (lib/types.ts)
+export { getBiasCategory, getBiasLabel, type BiasCategory } from '@/lib/types';
+
 const log = createLogger('meilisearch');
 
 const meilisearchUrl = process.env.MEILISEARCH_URL || process.env.MEILISEARCH_HOST || 'http://localhost:7700';
@@ -17,23 +20,6 @@ export const INDEXES = {
   stories: 'gn_stories',
   sources: 'gn_sources',
 } as const;
-
-// Bias category helper
-export type BiasCategory = 'left' | 'center' | 'right';
-
-export function getBiasCategory(score: number): BiasCategory {
-  if (score < -0.3) return 'left';
-  if (score > 0.3) return 'right';
-  return 'center';
-}
-
-export function getBiasLabel(score: number): string {
-  if (score <= -0.6) return 'Far Left';
-  if (score <= -0.3) return 'Left';
-  if (score < 0.3) return 'Center';
-  if (score < 0.6) return 'Right';
-  return 'Far Right';
-}
 
 // Initialize indexes with settings
 export async function initializeIndexes() {
@@ -55,21 +41,23 @@ export async function initializeIndexes() {
   // Articles index
   const articlesIndex = client.index(INDEXES.articles);
   await articlesIndex.updateSettings({
-    searchableAttributes: ['title', 'content', 'summary', 'excerpt'],
+    searchableAttributes: ['title', 'content', 'summary', 'excerpt', 'key_people', 'key_quotes'],
     filterableAttributes: [
-      'source_id', 
+      'source_id',
       'story_id',
-      'topics', 
-      'ai_bias_score', 
+      'topics',
+      'ai_bias_score',
       'ai_sentiment',
+      'article_type',
       'published_at',
       'is_processed'
     ],
-    sortableAttributes: ['published_at', 'ai_bias_score', 'created_at'],
+    sortableAttributes: ['published_at', 'ai_bias_score', 'created_at', 'reading_time'],
     displayedAttributes: [
       'id', 'source_id', 'story_id', 'url', 'title', 'summary', 'excerpt',
       'image_url', 'author', 'published_at', 'topics',
-      'ai_bias_score', 'ai_sentiment'
+      'ai_bias_score', 'ai_sentiment', 'article_type', 'reading_time',
+      'key_people', 'key_quotes'
     ],
     // Enable typo tolerance for better search
     typoTolerance: {
@@ -120,6 +108,10 @@ export interface ArticleDocument {
   topics: string[];
   ai_bias_score: number | null;
   ai_sentiment: 'positive' | 'negative' | 'neutral' | 'mixed' | null;
+  article_type: 'news' | 'opinion' | 'analysis' | 'interview' | null;
+  reading_time: number | null;
+  key_people: string[];
+  key_quotes: string[];
 }
 
 export interface StoryDocument {

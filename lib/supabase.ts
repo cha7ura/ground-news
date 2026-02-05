@@ -58,6 +58,13 @@ export interface Article {
   summary_si: string | null;
   summary_en: string | null;
   is_backfill: boolean;
+  // Enhanced enrichment fields (migration 006)
+  key_people: string[];
+  key_quotes: string[];
+  article_type: 'news' | 'opinion' | 'analysis' | 'interview' | null;
+  reading_time: number | null;
+  casualties: { deaths: number; injuries: number; description: string } | null;
+  monetary_amounts: Array<{ amount: number; currency: string; context: string }>;
   created_at: string;
   updated_at: string;
   // Joined data

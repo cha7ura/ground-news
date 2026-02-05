@@ -12,9 +12,165 @@ Ground News Sri Lanka is a news aggregation and media bias analysis platform for
 - Identify media blindspots (stories only covered by one side)
 - Provide daily briefings with coverage statistics
 
+### Non-Goals
+
+- **Not a content publisher**: We don't write or editorialize articles. We aggregate, analyze, and present what already exists.
+- **Not a fact-checker**: Bias detection is not the same as truth detection. We score editorial leaning, not factual accuracy (factuality_score is manually assigned per source, not verified per article).
+- **Not a social network**: No user accounts, comments, or community features. The platform is read-only for consumers.
+- **Not a real-time feed**: Pipelines run on intervals (ingestion every 2h, enrichment continuous, clustering every 6h). We accept minutes-to-hours latency, not seconds.
+- **Not a general-purpose news aggregator**: Scope is strictly Sri Lankan news sources. The bias model, source curation, and i18n are all tailored to this market.
+
 ---
 
-## 2. Architecture
+## 2. The Three Whys
+
+### Why This Problem?
+
+Sri Lanka's media landscape is deeply fragmented along political lines. Government-aligned outlets amplify one narrative; opposition-aligned outlets amplify another. Readers who rely on a single source get a distorted picture — they see what their preferred outlet wants them to see, and miss what it doesn't cover.
+
+There is no existing tool that:
+- Systematically maps the bias of Sri Lankan news sources
+- Groups coverage of the same event across outlets so readers can compare framing
+- Detects when an entire political perspective is absent from a story's coverage (blindspots)
+- Serves both English and Sinhala readers
+
+This isn't a hypothetical problem. During elections, policy debates, and crises, the divergence in coverage across outlets is dramatic and measurable. Readers deserve a way to see the full picture.
+
+### Why Now?
+
+Three enabling factors converged:
+
+1. **LLMs became cheap enough for per-article analysis.** GPT-4o-mini via OpenRouter costs fractions of a cent per article for bias scoring, sentiment analysis, and topic extraction. Two years ago, this would have been prohibitively expensive at our volume.
+
+2. **Open-source embedding models reached production quality.** Qwen3-Embedding-0.6B provides competitive clustering quality in a 400MB model that runs on a laptop. This eliminated the hard dependency on OpenAI embeddings for local development, making the entire pipeline self-hostable.
+
+3. **Sri Lankan news sources standardized on RSS.** Enough major outlets now publish RSS feeds that automated ingestion covers a meaningful cross-section of the media landscape without requiring per-source scraper maintenance.
+
+### Why This Approach?
+
+We chose **automated aggregation + AI analysis** over the two obvious alternatives:
+
+- **Manual curation** (like the original Ground News or AllSides): Doesn't scale for a small team covering a niche market. Human bias ratings and story groupings require dedicated editorial staff. AI gets us 80% of the way at 1% of the cost.
+
+- **Pure algorithmic** (like Google News clustering): Misses the editorial analysis layer. Grouping articles by topic isn't useful without bias scoring and blindspot detection — that's the entire value proposition.
+
+Our approach — automated ingestion, AI-powered bias analysis, vector-based clustering, with manual source-level bias calibration — balances accuracy with operational simplicity. The human-in-the-loop is at the source level (assigning editorial bias scores), not the article level.
+
+---
+
+## 3. Alternatives Considered
+
+### 3.1 Frontend Framework
+
+| Option | Considered | Decision |
+| --- | --- | --- |
+| **Next.js 14 (App Router)** | Server-side rendering, built-in i18n routing via `[locale]` segments, React Server Components for data-heavy pages | **Chosen** |
+| Remix | Good SSR story, but less mature i18n ecosystem and smaller community for our stack | Rejected |
+| Astro | Excellent for static content, but our pages are dynamic (real-time story feeds, search) and need React interactivity | Rejected |
+| SvelteKit | Strong framework, but team expertise is in React. Switching adds onboarding friction with no proportional benefit | Rejected |
+
+**Rationale**: Next.js gives us server-rendered pages (critical for SEO of news content), file-based routing, and first-class support for the `[locale]` URL pattern we need for bilingual support. The App Router's React Server Components let us fetch data on the server without client-side loading states, which matters for a content-heavy news feed.
+
+### 3.2 Database
+
+| Option | Considered | Decision |
+| --- | --- | --- |
+| **Supabase (PostgreSQL + pgvector)** | Managed Postgres with built-in vector support, auth, REST API, local CLI for development | **Chosen** |
+| PlanetScale (MySQL) | No native vector support; would require a separate vector DB | Rejected |
+| MongoDB Atlas | Vector search available, but schema flexibility isn't needed — our data model is relational | Rejected |
+| Pinecone + PostgreSQL | Dedicated vector DB is overkill at our scale; adds operational complexity of two databases | Rejected |
+| Weaviate / Qdrant | Pure vector DBs — would need a separate relational store for articles, sources, tags | Rejected |
+
+**Rationale**: Supabase gives us a single database for both relational data and vector embeddings via pgvector. At our scale (thousands of articles, not millions), a dedicated vector DB adds complexity without meaningful performance gains. The Supabase CLI provides a fully local development experience with the same schema, functions, and RLS policies as production.
+
+### 3.3 Orchestration / Pipeline
+
+| Option | Considered | Decision |
+| --- | --- | --- |
+| **TypeScript pipeline (`pipeline.ts`)** | Single-file orchestrator with ingest/enrich/cluster stages, runs as Node.js daemon or one-shot CLI | **Chosen (current)** |
+| n8n | Visual workflow builder, good for non-developers to understand flows | Used initially, then replaced |
+| Temporal / Inngest | Durable execution, retries, but heavyweight for our simple sequential pipelines | Rejected |
+| Cron + shell scripts | Simple, but no error handling, no state management, hard to debug | Rejected |
+
+**Rationale**: We started with n8n for its visual workflow builder, but migrated to a TypeScript pipeline for three reasons: (1) the pipeline logic involves complex embedding math and Union-Find clustering that's awkward to express in n8n nodes, (2) sharing types and utilities with the Next.js app eliminates duplication, and (3) debugging a TypeScript file is simpler than debugging n8n workflow JSON. The pipeline runs as a daemon (`pipeline.ts --daemon`) or one-shot (`pipeline.ts --ingest`).
+
+### 3.4 LLM Provider
+
+| Option | Considered | Decision |
+| --- | --- | --- |
+| **OpenRouter (GPT-4o-mini)** | Multi-model gateway, competitive pricing, no vendor lock-in | **Chosen** |
+| OpenAI direct | Higher cost, single-vendor dependency | Rejected for primary use |
+| Local LLM (Ollama/LM Studio) | Free, private, but quality gap on bias analysis and topic extraction for Sri Lankan political context | Rejected for analysis (used for embeddings) |
+| Anthropic Claude | High quality, but more expensive per-token than GPT-4o-mini for structured extraction tasks | Rejected for volume processing |
+
+**Rationale**: OpenRouter lets us use GPT-4o-mini at the cheapest available price while retaining the option to switch models (Claude, Gemini, Llama) without code changes. For per-article bias analysis at ~10 articles/hour, GPT-4o-mini provides sufficient quality at minimal cost. We use local models for embeddings (where open-source quality is competitive) but not for the nuanced bias analysis task.
+
+### 3.5 Search
+
+| Option | Considered | Decision |
+| --- | --- | --- |
+| **Meilisearch** | Typo-tolerant, fast, simple API, Docker image, low resource usage | **Chosen** |
+| Elasticsearch | Feature-rich but heavy (~2GB RAM), complex configuration, overkill for our use case | Rejected |
+| Typesense | Similar to Meilisearch, but smaller community and fewer integrations | Rejected |
+| PostgreSQL full-text search | Already have Postgres, but relevance ranking and typo tolerance are poor compared to dedicated search | Rejected |
+
+**Rationale**: Meilisearch is purpose-built for the kind of search we need — typo-tolerant, fast, with good relevance out of the box. It runs in a ~100MB Docker container vs. Elasticsearch's multi-GB footprint. Given that search is a secondary feature (most users browse feeds), the simplicity trade-off is worth it.
+
+### 3.6 Web Scraping
+
+| Option | Considered | Decision |
+| --- | --- | --- |
+| **Firecrawl (self-hosted)** | Handles JS-rendered pages, returns clean markdown, built-in rate limiting | **Chosen** |
+| Puppeteer/Playwright direct | Full control, but requires building extraction logic per-site | Rejected as primary (Playwright used by Firecrawl internally) |
+| Newspaper3k / Readability | Lightweight, but fails on JS-rendered pages common in Sri Lankan news sites | Rejected |
+| ScrapingBee / Browserless | Cloud-only, per-request pricing adds up at volume | Rejected |
+
+**Rationale**: Many Sri Lankan news sites use JavaScript rendering (React, dynamic ad loading). Firecrawl's self-hosted Docker image handles this via its bundled Playwright instance, returning clean markdown without per-site configuration. The self-hosted option avoids per-request cloud costs.
+
+### 3.7 Knowledge Graph
+
+| Option | Considered | Decision |
+| --- | --- | --- |
+| **Neo4j + Graphiti** | Temporal knowledge graph with entity resolution, designed for evolving facts | **Chosen** |
+| Plain PostgreSQL relations | Junction tables for article↔entity links work but don't support temporal queries or relationship traversal | Used for basic tagging, supplemented by Neo4j |
+| Amazon Neptune | Managed graph DB, but cloud-only and expensive for development | Rejected |
+| No graph layer | Simpler, but limits the ability to answer "how has coverage of person X evolved?" | Rejected |
+
+**Rationale**: The knowledge graph enables temporal entity analysis — tracking how coverage of a politician, organization, or topic evolves over time. Graphiti adds entity resolution (merging "President Dissanayake" and "AKD" into a single node) and temporal facts. This is supplementary to the core PostgreSQL tags system, not a replacement.
+
+---
+
+## 4. Risks & Mitigations
+
+| Risk | Likelihood | Impact | Mitigation |
+| --- | --- | --- | --- |
+| **LLM bias scores are inaccurate for Sri Lankan political context** | Medium | High — undermines core value proposition | Validate against human-labeled sample set. Use source-level bias as anchor. Allow manual overrides. Iterate on prompts with domain experts. |
+| **RSS feeds break or sources change URLs** | High | Medium — gaps in coverage | Health check script monitors feed availability. Pipeline logs failures per source. Firecrawl fallback for sources without RSS. |
+| **Embedding model quality degrades clustering** | Low | High — stories don't form or merge incorrectly | 0.85 similarity threshold is conservative. Monitor cluster quality metrics (avg cluster size, singleton rate). Can switch models via config without code changes. |
+| **OpenRouter rate limits or downtime** | Medium | Medium — enrichment pipeline stalls | Pipeline has retry logic with exponential backoff. Articles queue for enrichment and process on next run. No data loss, only delay. |
+| **Supabase free tier limits reached** | Medium | High — database becomes unavailable | Monitor row counts and storage. Migration path to self-hosted PostgreSQL is straightforward (standard pg_dump/restore + pgvector extension). |
+| **Scraping blocked by news sites** | Medium | Medium — reduced source coverage | Firecrawl rotates user agents. Rate limiting (2s between requests) keeps request patterns reasonable. RSS provides metadata even if scraping fails. |
+| **Bias model conflates editorial bias with reporting tone** | Medium | Medium — misleading scores | Two-level system separates source editorial bias (manual) from article tone (AI). UI clearly labels which score is shown. |
+| **Single developer / bus factor** | High | High — project stalls | Comprehensive design doc (this document). TypeScript throughout (single language). Standard tools (Next.js, Supabase, Docker). |
+
+---
+
+## 5. Success Metrics
+
+| Metric | Target | How Measured |
+| --- | --- | --- |
+| **Source coverage** | 15+ active Sri Lankan news sources across the political spectrum | `SELECT COUNT(*) FROM sources WHERE is_active = true` |
+| **Ingestion reliability** | >95% of published articles captured within 4 hours | Compare RSS feed item counts vs. ingested article counts per source |
+| **Enrichment throughput** | 100% of articles enriched within 6 hours of ingestion | `SELECT COUNT(*) FROM articles WHERE ai_enriched_at IS NULL AND created_at < NOW() - INTERVAL '6 hours'` should be 0 |
+| **Clustering quality** | <5% singleton articles (articles that should be in a story but aren't) | Manual review of recent unclustered articles weekly |
+| **Blindspot detection** | Correctly identify >80% of one-sided coverage stories | Manual validation against weekly sample |
+| **Bilingual coverage** | >90% of stories have both English and Sinhala article representation | Query stories with articles in both languages |
+| **Search relevance** | Top-3 results match user intent for common queries | Periodic manual testing with query set |
+| **Pipeline uptime** | >99% successful pipeline runs per week | Pipeline health check logs and alerting |
+
+---
+
+## 6. Architecture
 
 ```
                     +-----------------+
@@ -63,7 +219,7 @@ Ground News Sri Lanka is a news aggregation and media bias analysis platform for
 
 ---
 
-## 3. Data Model
+## 7. Data Model
 
 ### Entity Relationship
 
@@ -158,11 +314,11 @@ Entity tags for articles (persons, organizations, locations, topics, events).
 
 ---
 
-## 4. Data Pipeline
+## 8. Data Pipeline
 
 Three n8n workflows run on scheduled intervals to ingest, enrich, and cluster articles.
 
-### 4.1 Article Ingestion (every 30 minutes)
+### 8.1 Article Ingestion (every 30 minutes)
 
 ```
 [Schedule] -> [Get Active Sources] -> [Split Sources] -> [Fetch RSS]
@@ -179,7 +335,7 @@ Three n8n workflows run on scheduled intervals to ingest, enrich, and cluster ar
 - Rate-limited at 2 seconds between scrapes
 - Processes up to 20 RSS items per source per run
 
-### 4.2 Article Enrichment (every 1 hour)
+### 8.2 Article Enrichment (every 1 hour)
 
 ```
 [Schedule] -> [Get Un-enriched Articles (limit 10)]
@@ -191,10 +347,10 @@ Three n8n workflows run on scheduled intervals to ingest, enrich, and cluster ar
 **Details:**
 - Selects articles where `ai_enriched_at IS NULL` and `content IS NOT NULL`
 - LLM analysis extracts: summary, topics, bias_score, sentiment, bias_indicators, is_original_reporting
-- Embedding generation uses the configured provider (see Section 5)
+- Embedding generation uses the configured provider (see Section 9)
 - All enrichment data written back in a single update
 
-### 4.3 Story Clustering (every 2 hours)
+### 8.3 Story Clustering (every 2 hours)
 
 ```
 [Schedule] -> [Get Unclustered Articles (48h window)]
@@ -221,7 +377,7 @@ Three n8n workflows run on scheduled intervals to ingest, enrich, and cluster ar
 
 ---
 
-## 5. Embedding System
+## 9. Embedding System
 
 The embedding system supports three providers, switched via `APP_ENV` and `EMBEDDING_PROVIDER` environment variables.
 
@@ -359,7 +515,7 @@ EMBEDDING_MODEL=text-embedding-qwen3-embedding-0.6b
 
 ---
 
-## 6. Bias Analysis System
+## 10. Bias Analysis System
 
 ### Bias Score Scale
 
@@ -385,7 +541,7 @@ A story is flagged as a blindspot when:
 
 ---
 
-## 7. Internationalization (i18n)
+## 11. Internationalization (i18n)
 
 The platform supports English (`en`) and Sinhala (`si`):
 
@@ -402,7 +558,7 @@ Helper functions in `lib/types.ts`:
 
 ---
 
-## 8. Search
+## 12. Search
 
 Meilisearch v1.12 provides full-text search:
 
@@ -413,7 +569,18 @@ Meilisearch v1.12 provides full-text search:
 
 ---
 
-## 9. Infrastructure
+## 13. Source Write-Ups
+
+Per-source ingestion analysis documenting RSS availability, metadata quality, scraping strategy, and known limitations:
+
+| Source | Write-Up | RSS Status | Author Available | Date Extraction |
+| --- | --- | --- | --- | --- |
+| Ada Derana (EN) | [docs/sources/ada-derana.md](sources/ada-derana.md) | Working | No | Page text parsing |
+| Ada Derana (SI) | [docs/sources/ada-derana.md](sources/ada-derana.md) | **Broken** | No | Page text parsing |
+
+---
+
+## 14. Infrastructure
 
 ### Docker Services (`docker-compose.yml`)
 
@@ -529,7 +696,7 @@ Supabase can be swapped in any env file by changing the URL and keys.
 
 ---
 
-## 10. Frontend
+## 15. Frontend
 
 ### Tech Stack
 
@@ -563,7 +730,7 @@ app/[locale]/
 
 ---
 
-## 11. References
+## 16. References
 
 ### Embedding Models
 

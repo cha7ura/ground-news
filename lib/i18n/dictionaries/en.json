@@ -135,7 +135,15 @@
     "unknown_date": "Unknown date",
     "unknown_source": "Unknown Source",
     "trending": "Trending",
-    "bias_disclaimer": "Compare news coverage across Sri Lankan media sources. Bias ratings are AI-generated and for informational purposes only."
+    "bias_disclaimer": "Compare news coverage across Sri Lankan media sources. Bias ratings are AI-generated and for informational purposes only.",
+    "min_read": "{time} min",
+    "opinion": "Opinion",
+    "analysis": "Analysis",
+    "interview": "Interview",
+    "deaths": "deaths",
+    "injuries": "injuries",
+    "key_quotes": "Key Quotes",
+    "key_people": "Key People"
   },
   "tags": {
     "related_stories": "Related Stories",
