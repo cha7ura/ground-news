@@ -80,8 +80,51 @@ export interface Tag {
   article_count: number;
   is_active: boolean;
   created_by: string;
+  // Geographic fields (for location tags)
+  latitude: number | null;
+  longitude: number | null;
+  district: string | null;
+  province: string | null;
+  metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+}
+
+// Crime category tag slugs for incident mapping
+export const CRIME_TAG_SLUGS = [
+  'drugs',
+  'drug-trafficking',
+  'shooting',
+  'murder',
+  'homicide',
+  'robbery',
+  'assault',
+  'kidnapping',
+  'fraud',
+  'corruption',
+  'smuggling',
+  'organized-crime',
+  'sexual-assault',
+  'domestic-violence',
+  'arson',
+  'human-trafficking',
+] as const;
+
+export type CrimeTagSlug = typeof CRIME_TAG_SLUGS[number];
+
+export interface MapIncident {
+  article_id: string;
+  article_title: string;
+  article_url: string;
+  published_at: string | null;
+  source_name: string;
+  summary: string | null;
+  location_tag_name: string;
+  location_tag_slug: string;
+  latitude: number;
+  longitude: number;
+  district: string | null;
+  province: string | null;
 }
 
 export interface ArticleTag {

@@ -143,7 +143,12 @@
     "related_tags": "Related Tags",
     "source_coverage": "Source Coverage",
     "popular_tags": "Popular Tags",
-    "timeline": "Timeline"
+    "timeline": "Timeline",
+    "incident_map": "Incident Map",
+    "incident_timeline": "Incident Timeline",
+    "by_district": "By District",
+    "incidents": "incidents",
+    "locations": "locations"
   },
   "footer": {
     "brand": "Ground News Sri Lanka",

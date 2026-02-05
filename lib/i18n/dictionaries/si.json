@@ -143,7 +143,12 @@
     "related_tags": "අදාළ ටැග්",
     "source_coverage": "මාධ්‍ය ආවරණය",
     "popular_tags": "ජනප්‍රිය ටැග්",
-    "timeline": "කාල රේඛාව"
+    "timeline": "කාල රේඛාව",
+    "incident_map": "සිද්ධි සිතියම",
+    "incident_timeline": "සිද්ධි කාල රේඛාව",
+    "by_district": "දිස්ත්‍රික් බෙදීම",
+    "incidents": "සිද්ධි",
+    "locations": "ස්ථාන"
   },
   "footer": {
     "brand": "Ground News ශ්‍රී ලංකා",

@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import type { Tag, TagType } from '@/lib/types';
+import type { Tag, TagType, MapIncident, CrimeTagSlug, CRIME_TAG_SLUGS } from '@/lib/types';
 import { createLogger } from '@/lib/logger';
 
 const log = createLogger('supabase');
@@ -555,4 +555,52 @@ export async function removeTagFromArticle(articleId: string, tagId: string): Pr
   }
 
   return true;
+}
+
+// ============================================
+// Incident map data (crime tags + locations)
+// ============================================
+
+/**
+ * Get map data for a tag by calling the get_tag_map_data() DB function.
+ * Returns articles tagged with this tag that also have location tags with coordinates.
+ */
+export async function getTagMapData(tagSlug: string, limit = 200): Promise<MapIncident[]> {
+  const { data, error } = await supabase
+    .rpc('get_tag_map_data', { p_tag_slug: tagSlug, p_limit: limit });
+
+  if (error) {
+    log.error('Error fetching tag map data', { error });
+    return [];
+  }
+
+  return (data || []) as MapIncident[];
+}
+
+/**
+ * Check if a tag slug is a known crime category for incident mapping.
+ */
+export function isCrimeTag(slug: string): boolean {
+  const crimePatterns = [
+    'drugs', 'drug-trafficking', 'shooting', 'murder', 'homicide',
+    'robbery', 'assault', 'kidnapping', 'fraud', 'corruption',
+    'smuggling', 'organized-crime', 'sexual-assault', 'domestic-violence',
+    'arson', 'human-trafficking', 'crime', 'theft', 'stabbing',
+  ];
+  return crimePatterns.includes(slug);
+}
+
+/**
+ * Check if a tag should show the incident map + timeline layout.
+ * Includes crime categories AND law enforcement/military org tags.
+ */
+export function isIncidentTag(slug: string): boolean {
+  if (isCrimeTag(slug)) return true;
+  const lawEnforcementPatterns = [
+    'police', 'sri-lanka-police', 'army', 'sri-lanka-army',
+    'navy', 'sri-lanka-navy', 'air-force', 'sri-lanka-air-force',
+    'sti', 'cid', 'fcid', 'terrorism-investigation-division',
+    'police-narcotics-bureau', 'excise-department',
+  ];
+  return lawEnforcementPatterns.includes(slug);
 }
